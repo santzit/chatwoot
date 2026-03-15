@@ -8,11 +8,11 @@ Internet
     ▼
 Traefik  (ports 80 / 443, automatic TLS via Let's Encrypt)
     │
-    ├── empresa1.chat.mysubdomain.com  →  chatwoot_empresa1_web
-    ├── empresa2.chat.mysubdomain.com  →  chatwoot_empresa2_web
-    └── empresa3.chat.mysubdomain.com  →  chatwoot_empresa3_web
+    ├── empresa1.chat.mysubdomain.com  →  empresa1/  (web + worker)
+    ├── empresa2.chat.mysubdomain.com  →  empresa2/  (web + worker)
+    └── empresa3.chat.mysubdomain.com  →  empresa3/  (web + worker)
 
-Shared infrastructure
+Shared infrastructure  (infra/)
     ├── PostgreSQL 16  (separate database per tenant)
     └── Redis 7
 ```
@@ -22,21 +22,40 @@ Shared infrastructure
 ## Directory structure
 
 ```
-.
-├── docker-compose.yml          # Full stack definition
-├── .env.example                # Shared secrets template  →  copy to .env
-├── deployment/
-│   └── setup_24.04.sh          # One-command bootstrap for Ubuntu 24.04 LTS
-├── traefik/
-│   ├── traefik.yml             # Traefik static configuration
-│   └── acme.json               # Let's Encrypt store (create manually, chmod 600)
-├── scripts/
-│   └── init-db.sh              # Creates per-tenant databases on first Postgres boot
-└── env/
-    ├── empresa1.env.example    # Empresa 1 secrets template  →  copy to empresa1.env
-    ├── empresa2.env.example    # Empresa 2 secrets template  →  copy to empresa2.env
-    └── empresa3.env.example    # Empresa 3 secrets template  →  copy to empresa3.env
+/opt/chatwoot/
+│
+├── infra/
+│   ├── docker-compose.yml        # Traefik + PostgreSQL + Redis
+│   ├── .env.example              # Shared secrets template  →  copy to infra/.env
+│   └── traefik/
+│       ├── traefik.yml           # Traefik static configuration
+│       └── acme.json             # Let's Encrypt store (create manually, chmod 600)
+│
+├── empresa1/
+│   ├── docker-compose.yml        # Parameterized — identical across all tenants
+│   └── .env.example              # Tenant config template  →  copy to empresa1/.env
+│
+├── empresa2/
+│   ├── docker-compose.yml        # (identical to empresa1/)
+│   └── .env.example
+│
+├── empresa3/
+│   ├── docker-compose.yml        # (identical to empresa1/)
+│   └── .env.example
+│
+└── deployment/
+    └── setup_24.04.sh            # One-command bootstrap for Ubuntu 24.04 LTS
 ```
+
+> **Key design principle:** every `empresaN/docker-compose.yml` is **identical**.
+> All tenant-specific values (`TENANT_SLUG`, `DOMAIN`, `POSTGRES_DATABASE`,
+> cryptographic secrets, etc.) live exclusively in `empresaN/.env`.
+> Adding a new tenant is therefore just:
+> ```bash
+> cp -r empresa1 empresa4
+> # Edit empresa4/.env
+> docker compose --project-directory empresa4 up -d
+> ```
 
 ---
 
@@ -45,7 +64,7 @@ Shared infrastructure
 | Requirement | Notes |
 |---|---|
 | Docker ≥ 24 + Docker Compose v2 | `docker compose version` |
-| Domain / DNS | Point `*.chat.mysubdomain.com` (or individual A records) to the server IP |
+| Domain / DNS | Point each `empresaN.chat.mysubdomain.com` A record to the server IP |
 | Ports 80 and 443 open | Required by Traefik and the ACME HTTP-01 challenge |
 
 ---
@@ -54,167 +73,172 @@ Shared infrastructure
 
 ### Option A — Automated setup on Ubuntu 24.04 LTS (recommended)
 
-The script installs Docker Engine, configures the firewall, prompts you for all required values, writes the env files, and optionally starts the stack in one go:
-
 ```bash
-git clone https://github.com/santzit/chatwoot.git
-cd chatwoot
+git clone https://github.com/santzit/chatwoot.git /opt/chatwoot
+cd /opt/chatwoot
 sudo bash deployment/setup_24.04.sh
 ```
 
-The script accepts the following flags:
+The script:
+1. Installs Docker Engine CE (official Docker APT repo, Noble/24.04)
+2. Configures `ufw` (ports 22/80/443)
+3. Prompts for Postgres, Redis, SMTP, ACME e-mail, and per-tenant domains
+4. Writes `infra/.env` and `empresa*/.env` (auto-generates all crypto secrets)
+5. Patches `infra/traefik/traefik.yml` with the real ACME e-mail
+6. Creates `infra/traefik/acme.json` with mode `0600`
+7. Optionally starts infra + tenants and runs DB migrations
 
 | Flag | Description |
 |---|---|
-| `--skip-docker` | Skip Docker installation (Docker already present) |
-| `--skip-firewall` | Skip ufw firewall configuration |
+| `--skip-docker` | Skip Docker installation |
+| `--skip-firewall` | Skip ufw configuration |
 | `--version` | Print script version |
 | `--help` | Show usage |
 
-A full log is written to `/var/log/chatwoot-setup.log`.
+Full log: `/var/log/chatwoot-setup.log`
 
 ---
 
 ### Option B — Manual setup
 
-### 1. Clone and enter the repository
+#### 1. Clone the repository
 
 ```bash
-git clone https://github.com/santzit/chatwoot.git
-cd chatwoot
+git clone https://github.com/santzit/chatwoot.git /opt/chatwoot
+cd /opt/chatwoot
 ```
 
-### 2. Configure shared secrets
+#### 2. Configure infra secrets
 
 ```bash
-cp .env.example .env
+cp infra/.env.example infra/.env
 ```
 
-Edit `.env` and set:
+Edit `infra/.env` and set `POSTGRES_USERNAME`, `POSTGRES_PASSWORD`, and `REDIS_PASSWORD`.
+
+#### 3. Set the ACME e-mail
+
+Edit `infra/traefik/traefik.yml` and replace `admin@example.com`.
+
+#### 4. Create the Traefik certificate file
+
+```bash
+touch infra/traefik/acme.json
+chmod 600 infra/traefik/acme.json
+```
+
+#### 5. Configure each tenant
+
+```bash
+cp empresa1/.env.example empresa1/.env
+cp empresa2/.env.example empresa2/.env
+cp empresa3/.env.example empresa3/.env
+```
+
+For **each** `.env`, update at minimum:
 
 | Variable | Description |
 |---|---|
-| `POSTGRES_USERNAME` | PostgreSQL superuser name |
-| `POSTGRES_PASSWORD` | Strong password — `openssl rand -hex 32` |
-| `REDIS_PASSWORD` | Strong password — `openssl rand -hex 32` |
-
-### 3. Configure each Chatwoot instance
-
-```bash
-cp env/empresa1.env.example env/empresa1.env
-cp env/empresa2.env.example env/empresa2.env
-cp env/empresa3.env.example env/empresa3.env
-```
-
-For **each** instance file, update at minimum:
-
-| Variable | Description |
-|---|---|
-| `FRONTEND_URL` | Public HTTPS URL for this instance |
-| `SECRET_KEY_BASE` | `openssl rand -hex 64` (unique per instance) |
-| `POSTGRES_USERNAME` / `POSTGRES_PASSWORD` | Same values as in `.env` |
-| `REDIS_URL` | Replace the password placeholder with the value from `.env` |
-| `ACTIVE_RECORD_ENCRYPTION_*` | Run `openssl rand -hex 32` for each (unique per instance) |
+| `TENANT_SLUG` | Unique slug — used for container + Traefik names |
+| `DOMAIN` | Public hostname (must match your DNS record) |
+| `FRONTEND_URL` | Same as `https://<DOMAIN>` |
+| `POSTGRES_DATABASE` | Unique DB name, e.g. `chatwoot_empresa1` |
+| `POSTGRES_PASSWORD` | Must match `infra/.env` |
+| `REDIS_URL` | Paste the Redis password from `infra/.env` |
+| `SECRET_KEY_BASE` | `openssl rand -hex 64` (unique per tenant) |
+| `ACTIVE_RECORD_ENCRYPTION_*` | `openssl rand -hex 32` each (unique per tenant) |
 | `SMTP_*` | Your SMTP relay credentials |
 
-> **Important:** every instance **must** have a unique `SECRET_KEY_BASE`.  
-> Sharing the same key across instances is a security risk.
-
-### 4. Set the ACME e-mail address
-
-Edit `traefik/traefik.yml` and replace `admin@example.com` with a real e-mail address. Let's Encrypt uses this for certificate expiry notifications.
-
-### 5. Create the Traefik certificate file
-
-The file must exist **before** starting the stack and must be owned by root with mode `0600`:
+#### 6. Start infra
 
 ```bash
-touch traefik/acme.json
-chmod 600 traefik/acme.json
+docker compose --project-directory infra up -d
 ```
 
-### 6. Start the stack
+#### 7. Start tenants
 
 ```bash
-docker compose up -d
+docker compose --project-directory empresa1 up -d
+docker compose --project-directory empresa2 up -d
+docker compose --project-directory empresa3 up -d
 ```
 
-Check that all containers are healthy:
+#### 8. Run database migrations (first boot only)
 
 ```bash
-docker compose ps
-```
-
-### 7. Run database migrations for each instance
-
-On the very first boot, run the Rails migrations for each instance:
-
-```bash
-docker compose exec chatwoot_empresa1_web bundle exec rails db:chatwoot_prepare
-docker compose exec chatwoot_empresa2_web bundle exec rails db:chatwoot_prepare
-docker compose exec chatwoot_empresa3_web bundle exec rails db:chatwoot_prepare
-```
-
-### 8. Create the first admin user (per instance)
-
-```bash
-# Empresa 1
-docker compose exec chatwoot_empresa1_web \
-  bundle exec rails runner "User.create!(name:'Admin', email:'admin@empresa1.com', password:'changeme', role: :administrator)"
-
-# Repeat for empresa2 and empresa3 as needed.
+docker compose --project-directory empresa1 exec web bundle exec rails db:chatwoot_prepare
+docker compose --project-directory empresa2 exec web bundle exec rails db:chatwoot_prepare
+docker compose --project-directory empresa3 exec web bundle exec rails db:chatwoot_prepare
 ```
 
 ---
 
 ## Adding a new tenant
 
-1. Add a new env file: `cp env/empresa1.env.example env/empresa4.env` and fill it in (use `chatwoot_empresa4` as `POSTGRES_DATABASE`).
-2. Add the new database to the shared Postgres cluster:
-   ```bash
-   docker exec chatwoot_postgres \
-     psql -U "$POSTGRES_USER" -c "CREATE DATABASE chatwoot_empresa4;"
-   ```
-3. Add the new `web` and `worker` services to `docker-compose.yml` following the existing pattern.
-4. `docker compose up -d` — only the new containers are created.
-
----
-
-## Updating Chatwoot
-
 ```bash
-docker compose pull
-docker compose up -d
+# 1. Copy an existing tenant directory
+cp -r empresa1 empresa4
 
-# Run migrations for every instance after upgrading.
-docker compose exec chatwoot_empresa1_web bundle exec rails db:migrate
-docker compose exec chatwoot_empresa2_web bundle exec rails db:migrate
-docker compose exec chatwoot_empresa3_web bundle exec rails db:migrate
+# 2. Edit the new tenant's env file
+#    Change: TENANT_SLUG, DOMAIN, FRONTEND_URL, POSTGRES_DATABASE,
+#            SECRET_KEY_BASE, ACTIVE_RECORD_ENCRYPTION_* keys
+nano empresa4/.env
+
+# 3. Start the new tenant
+docker compose --project-directory empresa4 up -d
+
+# 4. Create and migrate the database
+docker compose --project-directory empresa4 exec web bundle exec rails db:chatwoot_prepare
 ```
+
+No changes to any other file are needed.
 
 ---
 
 ## Useful commands
 
 ```bash
-# View logs for a specific instance
-docker compose logs -f chatwoot_empresa1_web
+# Status of all services
+docker compose --project-directory infra ps
+docker compose --project-directory empresa1 ps
 
-# Open a Rails console for empresa2
-docker compose exec chatwoot_empresa2_web bundle exec rails console
+# Follow logs
+docker compose --project-directory empresa1 logs -f web
+docker compose --project-directory empresa1 logs -f worker
+
+# Rails console for a tenant
+docker compose --project-directory empresa1 exec web bundle exec rails console
 
 # Connect to the shared Postgres cluster
-docker compose exec postgres psql -U chatwoot -d chatwoot_empresa1
+docker compose --project-directory infra exec postgres psql -U chatwoot -d chatwoot_empresa1
 
-# Restart a single instance without affecting others
-docker compose restart chatwoot_empresa1_web chatwoot_empresa1_worker
+# Restart a single tenant without affecting others
+docker compose --project-directory empresa1 restart
+```
+
+---
+
+## Upgrading
+
+```bash
+# Upgrade infra
+docker compose --project-directory infra pull
+docker compose --project-directory infra up -d
+
+# Upgrade each tenant and run migrations
+for dir in empresa1 empresa2 empresa3; do
+  docker compose --project-directory "$dir" pull
+  docker compose --project-directory "$dir" up -d
+  docker compose --project-directory "$dir" exec web bundle exec rails db:migrate
+done
 ```
 
 ---
 
 ## Security notes
 
-- **Never commit** `.env` or `env/*.env` files — they are listed in `.gitignore`.
-- The `traefik/acme.json` file contains TLS private keys; it is also git-ignored.
-- Each Chatwoot instance has an isolated database and a separate `SECRET_KEY_BASE`, so a compromise of one instance does not expose another.
-- Traefik only exposes containers that carry the `traefik.enable=true` label; the database and Redis containers are not reachable from the internet.
+- **Never commit** `infra/.env` or `empresa*/.env` — they are listed in `.gitignore`.
+- `infra/traefik/acme.json` is also git-ignored (it holds TLS private keys).
+- Each tenant has a unique `SECRET_KEY_BASE` and `ACTIVE_RECORD_ENCRYPTION_*` set.
+- Postgres and Redis containers have no published ports — they are only reachable inside `chatwoot-net`.
+- Traefik only routes containers that carry the `traefik.enable=true` label.
