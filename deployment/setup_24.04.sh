@@ -408,7 +408,7 @@ EOF
   # --- Traefik ACME e-mail -----------------------------------------------
   local acme_email
   prompt_required acme_email "ACME / Let's Encrypt e-mail  (for cert expiry notifications)"
-  sed -i "s/CHANGE_ME@example.com/${acme_email}/" traefik/traefik.yml
+  sed -i "s|CHANGE_ME@example\.com|${acme_email}|" traefik/traefik.yml
 
   # --- Base domain (shared by all tenants) --------------------------------
   local base_domain
@@ -504,6 +504,59 @@ wait_for_infra() {
 # Start the stack (shared infra first, then each tenant)
 # ---------------------------------------------------------------------------
 start_stack() {
+  # ------------------------------------------------------------------
+  # Preflight check 1: ACME e-mail must have been set.
+  # If traefik/traefik.yml still contains the placeholder the Let's
+  # Encrypt API will reject the account registration with:
+  #   "contact email has forbidden domain "example.com""
+  # ------------------------------------------------------------------
+  if grep -q 'CHANGE_ME@example\.com' traefik/traefik.yml; then
+    error "traefik/traefik.yml still contains the placeholder ACME e-mail address."
+    error "Edit traefik/traefik.yml and replace 'CHANGE_ME@example.com' with your"
+    error "real e-mail, then re-run this script (or run setup again)."
+    return 1
+  fi
+
+  # ------------------------------------------------------------------
+  # Preflight check 2: every tenant's POSTGRES_USERNAME must match the
+  # shared Postgres superuser declared in the root .env.
+  # If a tenant sets POSTGRES_USERNAME to its slug (a common mistake),
+  # Postgres will fail with:
+  #   FATAL: password authentication failed for user "<slug>"
+  #   DETAIL: Role "<slug>" does not exist.
+  #
+  # Tenants are discovered dynamically: any subdirectory that contains
+  # both a docker-compose.yml and a .env file is treated as a tenant.
+  # ------------------------------------------------------------------
+  local root_pg_user
+  root_pg_user=$(grep -E '^POSTGRES_USERNAME=' .env 2>/dev/null \
+                   | sed 's/^POSTGRES_USERNAME=//')
+  if [[ -z "$root_pg_user" ]]; then
+    error "Root .env is missing POSTGRES_USERNAME. Run step 4 (configure environment) first."
+    return 1
+  fi
+
+  local slug tenant_pg_user
+  while IFS= read -r slug; do
+    if [[ ! -f "${slug}/.env" ]]; then
+      warn "${slug}/.env not found -- skipping preflight for ${slug}."
+      continue
+    fi
+    tenant_pg_user=$(grep -E '^POSTGRES_USERNAME=' "${slug}/.env" \
+                       | sed 's/^POSTGRES_USERNAME=//')
+    if [[ "$tenant_pg_user" != "$root_pg_user" ]]; then
+      error "POSTGRES_USERNAME mismatch in ${slug}/.env:"
+      error "  found:    '${tenant_pg_user}'"
+      error "  expected: '${root_pg_user}' (the shared Postgres user from root .env)"
+      error "Set POSTGRES_USERNAME=${root_pg_user} in ${slug}/.env and re-run."
+      return 1
+    fi
+  done < <(find . -maxdepth 1 -mindepth 1 -type d \
+             | while IFS= read -r dir; do
+                 dir="${dir#./}"
+                 [[ -f "${dir}/docker-compose.yml" && -f "${dir}/.env" ]] && echo "$dir"
+               done)
+
   local answer
   read -rp $'\nStart the Chatwoot stack now? (yes/no): ' answer
   if [[ "$answer" != "yes" ]]; then
