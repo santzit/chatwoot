@@ -29,6 +29,10 @@ services:
     ports:
       - "80:80"
       - "443:443"
+    environment:
+      # ACME_EMAIL is set in the root .env file — Traefik reads it from here
+      # and substitutes ${ACME_EMAIL} in traefik/traefik.yml at startup.
+      ACME_EMAIL: ${ACME_EMAIL}
     volumes:
       # Read-only Docker socket — lets Traefik discover labelled containers.
       - /var/run/docker.sock:/var/run/docker.sock:ro
