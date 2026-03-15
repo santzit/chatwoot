@@ -21,7 +21,7 @@ services:
   # Discovers company containers automatically via the Docker provider.
   # ===========================================================================
   traefik:
-    image: traefik:v3.3
+    image: traefik:v3.6
     container_name: chatwoot_traefik
     restart: unless-stopped
     networks:
