@@ -17,9 +17,8 @@
 #       .env                – Postgres + Redis credentials (root)
 #       empresa{N}/.env     – per-tenant Chatwoot config
 #  5. Patches the ACME e-mail in traefik/traefik.yml.
-#  6. Creates traefik/acme.json with the required 0600 permissions.
-#  7. Optionally starts the shared infra (docker compose up -d) then each
-#     tenant, and runs DB migrations.
+#  6. Optionally starts the shared infra (docker compose up -d), provisions each
+#     tenant database (rails db:chatwoot_prepare), then starts the tenant stacks.
 #
 # Usage
 # -----
@@ -524,33 +523,25 @@ start_stack() {
   for slug in "${tenants[@]}"; do
     info "Pulling images for ${slug}…"
     docker compose --project-directory "$slug" pull
+
+    # Create (or migrate) the tenant database BEFORE starting persistent
+    # containers.  Running db:chatwoot_prepare as a one-off container means
+    # the database already exists when the web and worker processes start,
+    # preventing the "FATAL: database does not exist" log spam that occurs
+    # when the app boots before its schema has been provisioned.
+    info "Provisioning database for ${slug}…"
+    if docker compose --project-directory "$slug" run --rm web \
+        bundle exec rails db:chatwoot_prepare; then
+      success "Database ready for ${slug}."
+    else
+      error "Database provisioning failed for ${slug}."
+      error "Re-run without --rm to inspect output:"
+      error "  docker compose --project-directory ${slug} run web bundle exec rails db:chatwoot_prepare"
+    fi
+
     info "Starting ${slug}…"
     docker compose --project-directory "$slug" up -d
     success "${slug} started."
-  done
-}
-
-# ---------------------------------------------------------------------------
-# Database migrations (first-run, per tenant)
-# ---------------------------------------------------------------------------
-run_migrations() {
-  local answer
-  read -rp $'\nRun database migrations for all tenants now? (yes/no): ' answer
-  if [[ "$answer" != "yes" ]]; then
-    warn "Skipping migrations. Run them manually per the README."
-    return
-  fi
-
-  local tenants=("empresa1" "empresa2" "empresa3")
-  for slug in "${tenants[@]}"; do
-    info "Running migrations for ${slug}…"
-    if docker compose --project-directory "$slug" exec web \
-        bundle exec rails db:chatwoot_prepare; then
-      success "Migrations complete for ${slug}."
-    else
-      error "Migration failed for ${slug}."
-      error "Check logs: docker compose --project-directory ${slug} logs web"
-    fi
   done
 }
 
@@ -631,23 +622,20 @@ main() {
   check_root
   check_os
 
-  info "Step 1/6 – Installing Docker Engine"
+  info "Step 1/5 – Installing Docker Engine"
   install_docker
 
-  info "Step 2/6 – Configuring firewall"
+  info "Step 2/5 – Configuring firewall"
   configure_firewall
 
-  info "Step 3/6 – Configuring environment"
+  info "Step 3/5 – Configuring environment"
   configure_environment
 
-  info "Step 4/6 – Preparing Traefik"
+  info "Step 4/5 – Preparing Traefik"
   prepare_traefik
 
-  info "Step 5/6 – Starting the stack"
+  info "Step 5/5 – Starting the stack"
   start_stack
-
-  info "Step 6/6 – Running database migrations"
-  run_migrations
 
   print_summary
 }
