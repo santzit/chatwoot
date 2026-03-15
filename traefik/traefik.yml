@@ -1,0 +1,61 @@
+# =============================================================================
+# traefik/traefik.yml  –  Traefik v3 static configuration
+#
+# Change the ACME e-mail address below before going to production.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# API / Dashboard  (disable or protect in production)
+# ---------------------------------------------------------------------------
+api:
+  dashboard: false   # Set to true and add a secured router if you need the UI.
+  insecure: false
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+log:
+  level: INFO        # DEBUG | INFO | WARN | ERROR
+
+# ---------------------------------------------------------------------------
+# Entry points
+# ---------------------------------------------------------------------------
+entryPoints:
+  # Plain HTTP – only used to issue a permanent redirect to HTTPS.
+  web:
+    address: ":80"
+    http:
+      redirections:
+        entryPoint:
+          to: websecure
+          scheme: https
+          permanent: true
+
+  # HTTPS – all real traffic lands here.
+  websecure:
+    address: ":443"
+    http:
+      tls:
+        certResolver: letsencrypt
+
+# ---------------------------------------------------------------------------
+# Providers
+# ---------------------------------------------------------------------------
+providers:
+  docker:
+    # Only expose containers that have the "traefik.enable=true" label.
+    exposedByDefault: false
+    network: chatwoot-net
+
+# ---------------------------------------------------------------------------
+# Certificate resolver (Let's Encrypt via HTTP-01 challenge)
+# ---------------------------------------------------------------------------
+certificatesResolvers:
+  letsencrypt:
+    acme:
+      # *** CHANGE THIS to your real e-mail address ***
+      email: admin@example.com
+      # Must match the path mounted in docker-compose.yml and have mode 0600.
+      storage: /acme.json
+      httpChallenge:
+        entryPoint: web
