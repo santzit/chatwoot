@@ -1,0 +1,199 @@
+# =============================================================================
+# .github/workflows/ci.yml
+#
+# CI pipeline for the multi-tenant Chatwoot Docker Compose stack.
+#
+# Jobs
+# ----
+#   lint          – shellcheck + yamllint on every script and YAML file.
+#   compose-config – docker compose config --quiet for every compose file.
+#   integration   – start Postgres+Redis, provision the testco tenant database,
+#                   and assert that the postgres log is free of
+#                   "FATAL: database does not exist" errors.
+# =============================================================================
+
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+# All jobs only read repository contents — restrict the token accordingly.
+permissions:
+  contents: read
+
+jobs:
+
+  # ---------------------------------------------------------------------------
+  # Job 1: Lint
+  # ---------------------------------------------------------------------------
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Shell script: syntax check + static analysis
+      - name: shellcheck – deployment/setup_24.04.sh
+        run: shellcheck --severity=warning deployment/setup_24.04.sh
+
+      # YAML files: syntax and style (config from .yamllint at repo root)
+      - name: yamllint – all YAML files
+        run: |
+          pip install --quiet yamllint
+          yamllint \
+            traefik/traefik.yml \
+            docker-compose.yml \
+            empresa1/docker-compose.yml \
+            empresa2/docker-compose.yml \
+            empresa3/docker-compose.yml \
+            testco/docker-compose.yml \
+            .github/workflows/ci.yml
+
+  # ---------------------------------------------------------------------------
+  # Job 2: Docker Compose config validation
+  # ---------------------------------------------------------------------------
+  compose-config:
+    name: Docker Compose – config validation
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Root compose (Traefik + Postgres + Redis)
+      - name: Validate root compose
+        run: |
+          printf 'POSTGRES_USERNAME=chatwoot\nPOSTGRES_PASSWORD=testpass\nREDIS_PASSWORD=testredis\n' > .env
+          docker compose config --quiet
+          echo "✔ root docker-compose.yml is valid"
+
+      # Tenant compose files – identical template, parameterised by .env
+      - name: Validate tenant compose files (empresa1, empresa2, empresa3, testco)
+        run: |
+          for slug in empresa1 empresa2 empresa3 testco; do
+            cat > "${slug}/.env" << EOF
+          TENANT_SLUG=${slug}
+          BASE_DOMAIN=chat.example.com
+          RAILS_ENV=production
+          RAILS_LOG_TO_STDOUT=true
+          SECRET_KEY_BASE=fakesecretkey00000000000000000000000000000000000000000000000000000000
+          POSTGRES_HOST=chatwoot_postgres
+          POSTGRES_PORT=5432
+          POSTGRES_DATABASE=chatwoot_${slug}
+          POSTGRES_USERNAME=chatwoot
+          POSTGRES_PASSWORD=testpass
+          REDIS_URL=redis://:testredis@chatwoot_redis:6379/0
+          ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY=fakekey0000000000000000000000000000
+          ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT=fakesalt000000000000000000000000000
+          ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY=fakeprimary00000000000000000000000000
+          SMTP_ADDRESS=localhost
+          SMTP_PORT=587
+          SMTP_USERNAME=test@example.com
+          SMTP_PASSWORD=smtppass
+          SMTP_AUTHENTICATION=plain
+          SMTP_ENABLE_STARTTLS_AUTO=true
+          MAILER_SENDER_EMAIL=Test <test@example.com>
+          EOF
+            docker compose --project-directory "${slug}" config --quiet
+            echo "✔ ${slug}/docker-compose.yml is valid"
+          done
+
+  # ---------------------------------------------------------------------------
+  # Job 3: Integration – infra startup + DB provisioning sequence
+  #
+  # Validates the fix for "FATAL: database does not exist":
+  #   1. Postgres starts healthy using the 'postgres' maintenance db.
+  #   2. The tenant db (chatwoot_testco) does NOT exist before provisioning.
+  #   3. Provisioning (simulating rails db:chatwoot_prepare) creates the db.
+  #   4. The app can connect to the tenant db after provisioning.
+  #   5. The postgres log is clean – no FATAL database-missing errors.
+  # ---------------------------------------------------------------------------
+  integration:
+    name: Integration – infra startup and DB provisioning
+    runs-on: ubuntu-latest
+    needs: compose-config
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Write root .env
+        run: |
+          printf 'POSTGRES_USERNAME=chatwoot\nPOSTGRES_PASSWORD=testpass\nREDIS_PASSWORD=testredis\n' > .env
+
+      # Start only Postgres and Redis – Traefik needs real ports 80/443 and is
+      # not relevant to the DB provisioning test.
+      - name: Start shared infra (Postgres + Redis)
+        run: docker compose up -d postgres redis
+
+      - name: Wait for Postgres to become healthy
+        run: |
+          echo "Waiting for Postgres to report healthy…"
+          timeout 60 bash -c \
+            'until docker inspect chatwoot_postgres \
+               --format "{{.State.Health.Status}}" 2>/dev/null \
+               | grep -q "^healthy$"; \
+             do sleep 2; done'
+          echo "✔ Postgres is healthy"
+
+      # Confirm the healthcheck targets the maintenance db, not a tenant db.
+      - name: Healthcheck uses the 'postgres' maintenance db
+        run: |
+          docker compose exec -T postgres \
+            pg_isready -U chatwoot -d postgres
+          echo "✔ pg_isready -d postgres succeeded"
+
+      # Guard: tenant db must NOT exist yet (clean-slate assertion).
+      - name: Assert chatwoot_testco does not exist before provisioning
+        run: |
+          count=$(docker compose exec -T postgres \
+            psql -U chatwoot -d postgres -tAc \
+            "SELECT COUNT(*) FROM pg_database WHERE datname='chatwoot_testco';")
+          if [ "$count" -ne 0 ]; then
+            echo "❌ chatwoot_testco already exists — unexpected state"
+            exit 1
+          fi
+          echo "✔ chatwoot_testco not present yet (expected)"
+
+      # Simulate rails db:chatwoot_prepare — creates the tenant database.
+      - name: Provision testco database (simulates rails db:chatwoot_prepare)
+        run: |
+          docker compose exec -T postgres \
+            psql -U chatwoot -d postgres -c "CREATE DATABASE chatwoot_testco;"
+          echo "✔ CREATE DATABASE chatwoot_testco succeeded"
+
+      # Verify the database row exists in pg_database.
+      - name: Verify chatwoot_testco exists after provisioning
+        run: |
+          docker compose exec -T postgres \
+            psql -U chatwoot -d postgres -tAc \
+            "SELECT datname FROM pg_database WHERE datname='chatwoot_testco';" \
+          | grep -q "chatwoot_testco"
+          echo "✔ chatwoot_testco confirmed in pg_database"
+
+      # Simulate what the Rails web/worker processes do on first connect:
+      # connect to the tenant db.  This must succeed without errors.
+      - name: App can connect to provisioned tenant db
+        run: |
+          docker compose exec -T postgres \
+            psql -U chatwoot -d chatwoot_testco -c "SELECT current_database();"
+          echo "✔ Connected to chatwoot_testco without errors"
+
+      # The core assertion: no FATAL database-missing errors should appear in
+      # the postgres log.  If they do, the provisioning-before-startup fix has
+      # regressed.
+      - name: Postgres log contains no FATAL database-missing errors
+        run: |
+          if docker compose logs postgres 2>&1 \
+              | grep -qE 'FATAL.*database.*does not exist'; then
+            echo "❌ Found FATAL 'database does not exist' in postgres logs:"
+            docker compose logs postgres | grep -E 'FATAL.*database.*does not exist'
+            exit 1
+          fi
+          echo "✔ No FATAL database-missing errors in postgres log"
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v

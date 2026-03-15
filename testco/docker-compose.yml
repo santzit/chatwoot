@@ -1,0 +1,103 @@
+# =============================================================================
+# docker-compose.yml  –  Chatwoot tenant instance
+# =============================================================================
+#
+# This file is IDENTICAL for every tenant.
+# All tenant-specific values come from the .env file in this directory.
+#
+# Required .env variables:
+#
+#   TENANT_SLUG  – unique identifier (e.g. empresa1); used for container names
+#                  and Traefik router/service names.
+#   BASE_DOMAIN  – shared base domain (e.g. chat.mysubdomain.com); the full
+#                  hostname is assembled as ${TENANT_SLUG}.${BASE_DOMAIN}.
+#
+# No full domain URL ever needs to be hardcoded.  Adding a new tenant:
+#
+#   cp -r empresa1 empresa4
+#   # Edit empresa4/.env:  TENANT_SLUG=empresa4  (and POSTGRES_DATABASE,
+#   #   SECRET_KEY_BASE, ACTIVE_RECORD_ENCRYPTION_* keys)
+#   #   BASE_DOMAIN stays the same for every tenant.
+#   docker compose --project-directory empresa4 up -d
+#   docker compose --project-directory empresa4 exec web \
+#     bundle exec rails db:chatwoot_prepare
+#
+# Prerequisites:
+#   The root docker-compose.yml (Traefik + Postgres + Redis) must be running
+#   so that the chatwoot-net network already exists.
+# =============================================================================
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # Web — Rails application server
+  # ---------------------------------------------------------------------------
+  web:
+    image: chatwoot/chatwoot:latest
+    container_name: chatwoot_${TENANT_SLUG}_web
+    restart: unless-stopped
+    env_file: .env
+    # FRONTEND_URL is derived from TENANT_SLUG + BASE_DOMAIN so it is always
+    # consistent with the Traefik routing rule below and never needs to be set
+    # manually in the .env file.
+    environment:
+      FRONTEND_URL: "https://${TENANT_SLUG}.${BASE_DOMAIN}"
+    command: bundle exec rails s -p 3000 -b 0.0.0.0
+    volumes:
+      - storage:/app/storage
+    networks:
+      - chatwoot-net
+    labels:
+      - "traefik.enable=true"
+
+      # ------------------------------------------------------------------
+      # HTTP router — redirects plain HTTP to HTTPS (per-tenant so the
+      # global web entrypoint stays clear for the ACME HTTP-01 challenge).
+      # ------------------------------------------------------------------
+      - "traefik.http.routers.${TENANT_SLUG}-http.rule=Host(`${TENANT_SLUG}.${BASE_DOMAIN}`)"
+      - "traefik.http.routers.${TENANT_SLUG}-http.entrypoints=web"
+      - "traefik.http.routers.${TENANT_SLUG}-http.middlewares=redirect-https@docker"
+
+      # Redirect middleware (shared; identical definition across all tenants
+      # — Docker deduplicates it automatically).
+      - "traefik.http.middlewares.redirect-https.redirectscheme.scheme=https"
+      - "traefik.http.middlewares.redirect-https.redirectscheme.permanent=true"
+
+      # ------------------------------------------------------------------
+      # HTTPS router — handles real traffic with TLS termination.
+      # ------------------------------------------------------------------
+      - "traefik.http.routers.${TENANT_SLUG}.rule=Host(`${TENANT_SLUG}.${BASE_DOMAIN}`)"
+      - "traefik.http.routers.${TENANT_SLUG}.entrypoints=websecure"
+      - "traefik.http.routers.${TENANT_SLUG}.tls=true"
+      - "traefik.http.routers.${TENANT_SLUG}.tls.certresolver=letsencrypt"
+      - "traefik.http.services.${TENANT_SLUG}.loadbalancer.server.port=3000"
+
+  # ---------------------------------------------------------------------------
+  # Worker — Sidekiq background job processor
+  # ---------------------------------------------------------------------------
+  worker:
+    image: chatwoot/chatwoot:latest
+    container_name: chatwoot_${TENANT_SLUG}_worker
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      FRONTEND_URL: "https://${TENANT_SLUG}.${BASE_DOMAIN}"
+    command: bundle exec sidekiq -C config/sidekiq.yml
+    volumes:
+      - storage:/app/storage
+    networks:
+      - chatwoot-net
+
+# =============================================================================
+# Network — joins the shared network declared in the root docker-compose.yml
+# =============================================================================
+networks:
+  chatwoot-net:
+    external: true
+    name: chatwoot-net
+
+# =============================================================================
+# Volumes — isolated file storage for this tenant
+# =============================================================================
+volumes:
+  storage:
