@@ -1,5 +1,5 @@
 # =============================================================================
-# infra/traefik/traefik.yml  –  Traefik v3 static configuration
+# traefik/traefik.yml  –  Traefik v3 static configuration
 #
 # Change the ACME e-mail address below before going to production.
 # =============================================================================

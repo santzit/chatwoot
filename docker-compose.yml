@@ -1,5 +1,5 @@
 # =============================================================================
-# infra/docker-compose.yml  –  Shared infrastructure services
+# docker-compose.yml  –  Shared infrastructure services
 # =============================================================================
 #
 # Manages:
@@ -12,7 +12,7 @@
 #   2. touch traefik/acme.json && chmod 600 traefik/acme.json
 #   3. docker compose up -d
 #
-# Start infra BEFORE starting any company instance.
+# Start this stack BEFORE starting any company instance.
 # =============================================================================
 
 services:
@@ -86,7 +86,7 @@ services:
 
 # =============================================================================
 # Network
-# Declared here with an explicit name so all company compose files can join it
+# Declared with an explicit name so all company compose files can join it
 # as an external network.
 # =============================================================================
 networks:
