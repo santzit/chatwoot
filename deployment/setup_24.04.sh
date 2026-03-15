@@ -447,6 +447,18 @@ EOF
 # ---------------------------------------------------------------------------
 prepare_traefik() {
   info "Preparing Traefik certificate storage…"
+
+  # Guard against a stale traefik/acme.json *directory* that the old bind-mount
+  # config may have created (Docker auto-creates a directory when the bind-mount
+  # source path doesn't exist on the host).  It is safe to remove because the
+  # current setup stores ACME data inside the named Docker volume "acme_data"
+  # (mounted at /letsencrypt inside Traefik) — no host file is involved.
+  if [ -d "traefik/acme.json" ]; then
+    warn "Found a stale traefik/acme.json directory (left over from an old bind-mount config). Removing it…"
+    rm -rf traefik/acme.json
+    success "Removed stale traefik/acme.json directory."
+  fi
+
   # acme.json lives inside a named Docker volume (acme_data:/letsencrypt).
   # Traefik creates /letsencrypt/acme.json automatically with the correct
   # 0600 permissions — no manual file creation or chmod step is required.
