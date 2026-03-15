@@ -447,9 +447,10 @@ EOF
 # ---------------------------------------------------------------------------
 prepare_traefik() {
   info "Preparing Traefik certificate storage…"
-  touch traefik/acme.json
-  chmod 600 traefik/acme.json
-  success "traefik/acme.json created with mode 0600."
+  # acme.json lives inside a named Docker volume (acme_data:/letsencrypt).
+  # Traefik creates /letsencrypt/acme.json automatically with the correct
+  # 0600 permissions — no manual file creation or chmod step is required.
+  success "Traefik certificate storage will be managed by Docker volume (acme_data)."
 }
 
 # ---------------------------------------------------------------------------

@@ -21,22 +21,15 @@ log:
 # Entry points
 # ---------------------------------------------------------------------------
 entryPoints:
-  # Plain HTTP – only used to issue a permanent redirect to HTTPS.
+  # Plain HTTP – serves the Let's Encrypt HTTP-01 challenge and the
+  # per-tenant redirect middleware (defined in each tenant's compose labels).
+  # Do NOT add a global redirect here — it would block the ACME challenge.
   web:
     address: ":80"
-    http:
-      redirections:
-        entryPoint:
-          to: websecure
-          scheme: https
-          permanent: true
 
-  # HTTPS – all real traffic lands here.
+  # HTTPS – all real application traffic lands here.
   websecure:
     address: ":443"
-    http:
-      tls:
-        certResolver: letsencrypt
 
 # ---------------------------------------------------------------------------
 # Providers
@@ -56,7 +49,7 @@ certificatesResolvers:
     acme:
       # *** CHANGE THIS to your real e-mail address ***
       email: CHANGE_ME@example.com
-      # Must match the path mounted in docker-compose.yml and have mode 0600.
-      storage: /acme.json
+      # Must match the path inside the named volume mounted in docker-compose.yml.
+      storage: /letsencrypt/acme.json
       httpChallenge:
         entryPoint: web

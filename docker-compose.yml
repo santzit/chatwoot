@@ -9,8 +9,7 @@
 #
 # Usage:
 #   1. Copy .env.example to .env and fill in every value.
-#   2. touch traefik/acme.json && chmod 600 traefik/acme.json
-#   3. docker compose up -d
+#   2. docker compose up -d
 #
 # Start this stack BEFORE starting any company instance.
 # =============================================================================
@@ -35,8 +34,10 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       # Static configuration (entrypoints, ACME resolver, Docker provider).
       - ./traefik/traefik.yml:/traefik.yml:ro
-      # Let's Encrypt certificate store — must exist with mode 0600.
-      - ./traefik/acme.json:/acme.json
+      # Let's Encrypt certificate store.
+      # Using a named volume lets Traefik create the file with correct 0600
+      # permissions automatically — no manual chmod step required.
+      - acme_data:/letsencrypt
 
   # ===========================================================================
   # PostgreSQL — shared cluster, one database per tenant
@@ -57,7 +58,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER"]
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d postgres"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -100,3 +101,4 @@ networks:
 volumes:
   postgres_data:
   redis_data:
+  acme_data:
