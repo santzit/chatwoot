@@ -48,7 +48,7 @@ services:
   # Company databases are created by scripts/create-company.sh.
   # ===========================================================================
   postgres:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:pg16
     container_name: chatwoot_postgres
     restart: unless-stopped
     networks:
