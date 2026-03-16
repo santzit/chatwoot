@@ -1,0 +1,48 @@
+# =============================================================================
+# infrastructure/traefik/docker-compose.yml  –  Traefik reverse proxy
+#
+# Manages:
+#   • Traefik v3  — reverse proxy, TLS termination, Let's Encrypt
+#
+# Prerequisites:
+#   Copy .env.example to .env and set ACME_EMAIL.
+#   Ensure infrastructure/traefik/acme.json exists with permissions 600.
+#   Run the setup script (deployment/setup_24.04.sh) to do this automatically.
+#
+# Usage (from repo root):
+#   docker compose -f infrastructure/traefik/docker-compose.yml up -d
+#
+# Must start BEFORE postgres, redis, or any company instance.
+# Declares the shared chatwoot-net network; all other services join it.
+# =============================================================================
+
+services:
+
+  traefik:
+    image: traefik:v3.6
+    container_name: chatwoot_traefik
+    restart: unless-stopped
+    networks:
+      - chatwoot-net
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      # Read from infrastructure/traefik/.env — do NOT edit traefik.yml.
+      ACME_EMAIL: ${ACME_EMAIL}
+    volumes:
+      # Read-only Docker socket — lets Traefik discover labelled containers.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # Static configuration (entrypoints, ACME resolver, Docker provider).
+      - ./traefik.yml:/traefik.yml:ro
+      # Let's Encrypt certificate storage.
+      # Created by setup script with chmod 600 — Traefik requires strict perms.
+      - ./acme.json:/acme.json
+
+# =============================================================================
+# Network — declared here; postgres, redis, and company stacks join externally.
+# =============================================================================
+networks:
+  chatwoot-net:
+    name: chatwoot-net
+    driver: bridge

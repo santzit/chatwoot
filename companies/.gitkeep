@@ -1,0 +1,8 @@
+# This directory holds per-company environment files.
+# All *.env files are listed in .gitignore and must never be committed.
+#
+# To create a new company:
+#   scripts/create-company.sh <company-name> <domain>
+#
+# Example:
+#   scripts/create-company.sh acme acme.chat.yourdomain.com

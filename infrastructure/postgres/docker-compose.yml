@@ -1,0 +1,50 @@
+# =============================================================================
+# infrastructure/postgres/docker-compose.yml  –  PostgreSQL shared cluster
+#
+# Manages:
+#   • PostgreSQL 16  — shared cluster (one database per company)
+#
+# Prerequisites:
+#   Copy .env.example to .env and fill in POSTGRES_USERNAME / POSTGRES_PASSWORD.
+#
+# Usage (from repo root):
+#   docker compose -f infrastructure/postgres/docker-compose.yml up -d
+#
+# Start AFTER Traefik (so the chatwoot-net network already exists).
+# =============================================================================
+
+services:
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: chatwoot_postgres
+    restart: unless-stopped
+    networks:
+      - chatwoot-net
+    environment:
+      POSTGRES_USER: ${POSTGRES_USERNAME}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      # "postgres" is the internal maintenance database.
+      # Company databases are created by scripts/create-company.sh.
+      POSTGRES_DB: postgres
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+# =============================================================================
+# Network — joins the shared network declared by the Traefik compose.
+# =============================================================================
+networks:
+  chatwoot-net:
+    external: true
+    name: chatwoot-net
+
+# =============================================================================
+# Volumes
+# =============================================================================
+volumes:
+  postgres_data:

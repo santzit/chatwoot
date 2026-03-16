@@ -1,0 +1,175 @@
+#!/usr/bin/env bash
+# =============================================================================
+# scripts/create-company.sh
+#
+# Creates a new Chatwoot company instance:
+#   1. Creates a dedicated Postgres database (chatwoot_<company>).
+#   2. Generates companies/<company>.env from the template with fresh secrets.
+#   3. Starts the web + worker containers using the shared compose template.
+#
+# Usage:
+#   scripts/create-company.sh <company-name> <domain>
+#
+# Example:
+#   scripts/create-company.sh acme acme.chat.yourdomain.com
+#
+# Requirements:
+#   • Run from the repository root.
+#   • infrastructure/traefik, infrastructure/postgres, and infrastructure/redis
+#     must already be running.
+#   • openssl must be available (installed by default on Ubuntu).
+# =============================================================================
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+cd "$REPO_ROOT"
+
+# ---------------------------------------------------------------------------
+# Colour helpers
+# ---------------------------------------------------------------------------
+if [ -t 1 ]; then
+  RED='\033[0;31m'; YELLOW='\033[1;33m'; GREEN='\033[0;32m'; CYAN='\033[0;36m'; RESET='\033[0m'
+else
+  RED=''; YELLOW=''; GREEN=''; CYAN=''; RESET=''
+fi
+
+info()    { echo -e "${CYAN}➥ $*${RESET}"; }
+success() { echo -e "${GREEN}✔  $*${RESET}"; }
+warn()    { echo -e "${YELLOW}⚠  $*${RESET}"; }
+error()   { echo -e "${RED}✖  $*${RESET}" >&2; }
+die()     { error "$*"; exit 1; }
+
+# ---------------------------------------------------------------------------
+# Argument validation
+# ---------------------------------------------------------------------------
+if [[ $# -lt 2 ]]; then
+  echo "Usage: $0 <company-name> <domain>"
+  echo ""
+  echo "Example:"
+  echo "  $0 acme acme.chat.yourdomain.com"
+  exit 1
+fi
+
+COMPANY="$1"
+DOMAIN="$2"
+
+# Validate company name: lowercase letters, digits, hyphens only.
+if ! [[ "$COMPANY" =~ ^[a-z0-9-]+$ ]]; then
+  die "Company name must contain only lowercase letters, digits, and hyphens. Got: '${COMPANY}'"
+fi
+
+# Export so all docker compose sub-commands inherit them for compose-file
+# variable interpolation (env_file path, container names, Traefik labels).
+export COMPANY DOMAIN
+
+DB="chatwoot_${COMPANY}"
+ENV_FILE="companies/${COMPANY}.env"
+
+# ---------------------------------------------------------------------------
+# Guard: refuse to overwrite an existing company
+# ---------------------------------------------------------------------------
+if [[ -f "$ENV_FILE" ]]; then
+  die "${ENV_FILE} already exists. Remove it first if you want to recreate the company."
+fi
+
+# ---------------------------------------------------------------------------
+# Read shared credentials from infrastructure .env files
+# ---------------------------------------------------------------------------
+POSTGRES_USERNAME=$(grep -E '^POSTGRES_USERNAME=' infrastructure/postgres/.env 2>/dev/null \
+                    | sed 's/^POSTGRES_USERNAME=//' || true)
+POSTGRES_PASSWORD=$(grep -E '^POSTGRES_PASSWORD=' infrastructure/postgres/.env 2>/dev/null \
+                    | sed 's/^POSTGRES_PASSWORD=//' || true)
+REDIS_PASSWORD=$(grep -E '^REDIS_PASSWORD=' infrastructure/redis/.env 2>/dev/null \
+                  | sed 's/^REDIS_PASSWORD=//' || true)
+
+[[ -n "$POSTGRES_USERNAME" ]] || die "infrastructure/postgres/.env is missing POSTGRES_USERNAME. Run setup first."
+[[ -n "$POSTGRES_PASSWORD" ]] || die "infrastructure/postgres/.env is missing POSTGRES_PASSWORD. Run setup first."
+[[ -n "$REDIS_PASSWORD" ]]    || die "infrastructure/redis/.env is missing REDIS_PASSWORD. Run setup first."
+
+echo ""
+echo -e "${CYAN}Creating company: ${COMPANY}${RESET}"
+echo "  Domain:    ${DOMAIN}"
+echo "  Database:  ${DB}"
+echo "  Env file:  ${ENV_FILE}"
+echo ""
+
+# ---------------------------------------------------------------------------
+# 1. Create the Postgres database
+# ---------------------------------------------------------------------------
+info "Creating database ${DB}…"
+if docker exec chatwoot_postgres psql -U "$POSTGRES_USERNAME" \
+    -c "CREATE DATABASE \"${DB}\";" 2>/dev/null; then
+  success "Database ${DB} created."
+else
+  warn "Database ${DB} may already exist — continuing."
+fi
+
+# ---------------------------------------------------------------------------
+# 2. Generate the company .env from the template
+# ---------------------------------------------------------------------------
+info "Generating ${ENV_FILE}…"
+
+SECRET_KEY=$(openssl rand -hex 64)
+ENC_DET=$(openssl rand -hex 32)
+ENC_SALT=$(openssl rand -hex 32)
+ENC_PRIM=$(openssl rand -hex 32)
+
+cp chatwoot-template/example.env "$ENV_FILE"
+
+# Substitute identity + auto-generated secrets
+sed -i "s|^COMPANY_NAME=.*|COMPANY_NAME=${COMPANY}|"       "$ENV_FILE"
+sed -i "s|^DOMAIN=.*|DOMAIN=${DOMAIN}|"                    "$ENV_FILE"
+sed -i "s|^POSTGRES_DATABASE=.*|POSTGRES_DATABASE=${DB}|"  "$ENV_FILE"
+sed -i "s|^POSTGRES_USERNAME=.*|POSTGRES_USERNAME=${POSTGRES_USERNAME}|" "$ENV_FILE"
+sed -i "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=${POSTGRES_PASSWORD}|" "$ENV_FILE"
+sed -i "s|^REDIS_URL=.*|REDIS_URL=redis://:${REDIS_PASSWORD}@chatwoot_redis:6379/0|" "$ENV_FILE"
+sed -i "s|^SECRET_KEY_BASE=.*|SECRET_KEY_BASE=${SECRET_KEY}|" "$ENV_FILE"
+sed -i "s|^ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY=.*|ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY=${ENC_DET}|" "$ENV_FILE"
+sed -i "s|^ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT=.*|ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT=${ENC_SALT}|" "$ENV_FILE"
+sed -i "s|^ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY=.*|ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY=${ENC_PRIM}|" "$ENV_FILE"
+
+chmod 600 "$ENV_FILE"
+success "Generated ${ENV_FILE}."
+
+echo ""
+echo -e "${YELLOW}⚠  Review ${ENV_FILE} and update SMTP settings before going live.${RESET}"
+echo ""
+
+# ---------------------------------------------------------------------------
+# 3. Provision the database schema (rails db:chatwoot_prepare)
+# ---------------------------------------------------------------------------
+info "Provisioning database schema for ${COMPANY}…"
+if docker compose \
+    --project-name "chatwoot_${COMPANY}" \
+    -f chatwoot-template/docker-compose.yml \
+    run --rm web bundle exec rails db:chatwoot_prepare; then
+  success "Database schema provisioned."
+else
+  error "Database provisioning failed for ${COMPANY}."
+  error "Re-run without --rm to inspect output:"
+  error "  COMPANY=${COMPANY} DOMAIN=${DOMAIN} docker compose \\"
+  error "    --project-name chatwoot_${COMPANY} \\"
+  error "    -f chatwoot-template/docker-compose.yml \\"
+  error "    run web bundle exec rails db:chatwoot_prepare"
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# 4. Start the company stack
+# ---------------------------------------------------------------------------
+info "Starting ${COMPANY} stack…"
+docker compose \
+  --project-name "chatwoot_${COMPANY}" \
+  -f chatwoot-template/docker-compose.yml \
+  up -d
+
+success "${COMPANY} is running at https://${DOMAIN}"
+echo ""
+echo "Useful commands:"
+echo "  Logs:    COMPANY=${COMPANY} DOMAIN=${DOMAIN} docker compose --project-name chatwoot_${COMPANY} -f chatwoot-template/docker-compose.yml logs -f web"
+echo "  Console: docker exec -it chatwoot_${COMPANY}_web bundle exec rails console"
+echo "  Stop:    COMPANY=${COMPANY} DOMAIN=${DOMAIN} docker compose --project-name chatwoot_${COMPANY} -f chatwoot-template/docker-compose.yml down"
+echo ""
+echo -e "${YELLOW}Note: TLS certificate issuance may take up to 60 seconds on first start.${RESET}"

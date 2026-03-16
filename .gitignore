@@ -3,10 +3,24 @@
 # =============================================================================
 
 # ---------------------------------------------------------------------------
-# Actual secret env files (commit only the .example counterparts)
+# Infrastructure secrets (commit only the .env.example counterparts)
 # ---------------------------------------------------------------------------
-.env
-empresa*/.env
+infrastructure/traefik/.env
+infrastructure/traefik/acme.json
+infrastructure/postgres/.env
+infrastructure/redis/.env
+
+# ---------------------------------------------------------------------------
+# Company env files — actual secrets, never commit
+# (The companies/ directory itself is tracked via companies/.gitkeep)
+# ---------------------------------------------------------------------------
+companies/*.env
+
+# ---------------------------------------------------------------------------
+# Backup files
+# ---------------------------------------------------------------------------
+backups/*.sql.gz
+backups/*.sql
 
 # ---------------------------------------------------------------------------
 # OS / editor artifacts

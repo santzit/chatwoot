@@ -1,0 +1,100 @@
+# =============================================================================
+# chatwoot-template/docker-compose.yml  –  Chatwoot instance template
+#
+# This single file is shared by ALL company instances.
+# Company-specific values come from companies/${COMPANY}.env.
+#
+# Usage:
+#   COMPANY=mycompany DOMAIN=mycompany.chat.example.com \
+#     docker compose \
+#       --project-name chatwoot_mycompany \
+#       -f chatwoot-template/docker-compose.yml \
+#       up -d
+#
+# Or, simpler: use scripts/create-company.sh <company> <domain>
+#
+# Required environment variables (pass on the command line or via shell):
+#   COMPANY  – unique company slug (e.g. mycompany); used for container names
+#              and Traefik router/service names.
+#   DOMAIN   – full public hostname (e.g. mycompany.chat.example.com);
+#              read from companies/${COMPANY}.env by the create-company script.
+#
+# Prerequisites:
+#   • infrastructure/traefik, infrastructure/postgres, and infrastructure/redis
+#     must be running so that the chatwoot-net network already exists.
+#   • A company database (chatwoot_${COMPANY}) must exist in Postgres.
+#     scripts/create-company.sh creates it automatically.
+# =============================================================================
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # Web — Rails application server
+  # ---------------------------------------------------------------------------
+  web:
+    image: chatwoot/chatwoot:latest
+    container_name: chatwoot_${COMPANY}_web
+    env_file:
+      - ../companies/${COMPANY}.env
+    environment:
+      # FRONTEND_URL derives from the public DOMAIN so it is always consistent
+      # with the Traefik routing rule — never hardcode it in the company env.
+      FRONTEND_URL: "https://${DOMAIN}"
+    command: bundle exec rails s -p 3000 -b 0.0.0.0
+    restart: unless-stopped
+    volumes:
+      - storage:/app/storage
+    networks:
+      - chatwoot-net
+    labels:
+      - "traefik.enable=true"
+
+      # ------------------------------------------------------------------
+      # HTTP router — redirects plain HTTP → HTTPS (keeps port 80 clear
+      # for the ACME HTTP-01 challenge; do NOT use a global redirect).
+      # ------------------------------------------------------------------
+      - "traefik.http.routers.${COMPANY}-http.rule=Host(`${DOMAIN}`)"
+      - "traefik.http.routers.${COMPANY}-http.entrypoints=web"
+      - "traefik.http.routers.${COMPANY}-http.middlewares=redirect-https@docker"
+      - "traefik.http.middlewares.redirect-https.redirectscheme.scheme=https"
+      - "traefik.http.middlewares.redirect-https.redirectscheme.permanent=true"
+
+      # ------------------------------------------------------------------
+      # HTTPS router — TLS termination via Let's Encrypt.
+      # ------------------------------------------------------------------
+      - "traefik.http.routers.${COMPANY}.rule=Host(`${DOMAIN}`)"
+      - "traefik.http.routers.${COMPANY}.entrypoints=websecure"
+      - "traefik.http.routers.${COMPANY}.tls=true"
+      - "traefik.http.routers.${COMPANY}.tls.certresolver=letsencrypt"
+      - "traefik.http.services.${COMPANY}.loadbalancer.server.port=3000"
+
+  # ---------------------------------------------------------------------------
+  # Worker — Sidekiq background job processor
+  # ---------------------------------------------------------------------------
+  worker:
+    image: chatwoot/chatwoot:latest
+    container_name: chatwoot_${COMPANY}_worker
+    env_file:
+      - ../companies/${COMPANY}.env
+    environment:
+      FRONTEND_URL: "https://${DOMAIN}"
+    command: bundle exec sidekiq -C config/sidekiq.yml
+    restart: unless-stopped
+    volumes:
+      - storage:/app/storage
+    networks:
+      - chatwoot-net
+
+# =============================================================================
+# Network — joins the shared network declared by the Traefik compose.
+# =============================================================================
+networks:
+  chatwoot-net:
+    external: true
+    name: chatwoot-net
+
+# =============================================================================
+# Volumes — isolated file storage for this company instance.
+# =============================================================================
+volumes:
+  storage:
