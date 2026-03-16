@@ -105,7 +105,7 @@ jobs:
       - name: Create chatwoot_testco database
         run: |
           docker exec chatwoot_postgres \
-            psql -U chatwoot -c "CREATE DATABASE chatwoot_testco;"
+            psql -U chatwoot -d postgres -c "CREATE DATABASE chatwoot_testco;"
           echo "✔ chatwoot_testco database created"
 
       - name: Run rails db:chatwoot_prepare (provision schema)

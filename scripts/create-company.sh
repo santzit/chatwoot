@@ -98,7 +98,7 @@ echo ""
 # 1. Create the Postgres database
 # ---------------------------------------------------------------------------
 info "Creating database ${DB}…"
-if docker exec chatwoot_postgres psql -U "$POSTGRES_USERNAME" \
+if docker exec chatwoot_postgres psql -U "$POSTGRES_USERNAME" -d postgres \
     -c "CREATE DATABASE \"${DB}\";" 2>/dev/null; then
   success "Database ${DB} created."
 else
