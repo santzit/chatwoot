@@ -44,9 +44,9 @@ TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 BACKUP_DIR="${REPO_ROOT}/backups"
 mkdir -p "$BACKUP_DIR"
 
-POSTGRES_USERNAME=$(grep -E '^POSTGRES_USERNAME=' infrastructure/postgres/.env 2>/dev/null \
+POSTGRES_USERNAME=$(grep -E '^POSTGRES_USERNAME=' infra/.env 2>/dev/null \
                     | sed 's/^POSTGRES_USERNAME=//' || true)
-[[ -n "$POSTGRES_USERNAME" ]] || die "infrastructure/postgres/.env missing POSTGRES_USERNAME."
+[[ -n "$POSTGRES_USERNAME" ]] || die "infra/.env missing POSTGRES_USERNAME. Copy infra/.env.example to infra/.env and fill in the values."
 
 # ---------------------------------------------------------------------------
 # Backup function

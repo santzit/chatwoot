@@ -20,8 +20,8 @@
 #              read from companies/${COMPANY}.env by the create-company script.
 #
 # Prerequisites:
-#   • infrastructure/traefik, infrastructure/postgres, and infrastructure/redis
-#     must be running so that the chatwoot-net network already exists.
+#   • infra/ must be running so that the chatwoot-net network already exists:
+#       docker compose -f infra/docker-compose.yml up -d
 #   • A company database (chatwoot_${COMPANY}) must exist in Postgres.
 #     scripts/create-company.sh creates it automatically.
 # =============================================================================

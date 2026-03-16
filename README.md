@@ -12,7 +12,7 @@ Traefik  (ports 80 / 443, automatic TLS via Let's Encrypt)
     ├── company2.chat.yourdomain.com  →  chatwoot_company2_web
     └── company3.chat.yourdomain.com  →  chatwoot_company3_web
 
-Shared infrastructure
+Shared infrastructure  (infra/)
     ├── PostgreSQL 16  (one database per company)
     └── Redis 7
 ```
@@ -24,33 +24,24 @@ Shared infrastructure
 ```
 chatwoot-platform/
 │
-├── infrastructure/
-│   ├── traefik/
-│   │   ├── docker-compose.yml   # Traefik reverse proxy
-│   │   ├── traefik.yml          # Traefik static config
-│   │   ├── .env.example         # → copy to .env, set ACME_EMAIL
-│   │   └── acme.json            # Let's Encrypt cert store (create manually, chmod 600)
-│   │
-│   ├── postgres/
-│   │   ├── docker-compose.yml   # PostgreSQL shared cluster
-│   │   └── .env.example         # → copy to .env, set POSTGRES_USERNAME / PASSWORD
-│   │
-│   └── redis/
-│       ├── docker-compose.yml   # Redis shared instance
-│       └── .env.example         # → copy to .env, set REDIS_PASSWORD
+├── infra/
+│   ├── docker-compose.yml   # Traefik + PostgreSQL + Redis (all-in-one)
+│   ├── traefik.yml          # Traefik static config
+│   ├── .env.example         # → copy to .env, fill in all four values
+│   └── acme.json            # Let's Encrypt cert store (create manually, chmod 600)
 │
 ├── chatwoot-template/
-│   ├── docker-compose.yml       # Shared template — same for every company
-│   └── example.env              # Company env template
+│   ├── docker-compose.yml   # Shared template — same for every company
+│   └── example.env          # Company env template
 │
-├── companies/                   # Per-company .env files (all gitignored)
+├── companies/               # Per-company .env files (all gitignored)
 │   └── .gitkeep
 │
 ├── scripts/
-│   ├── create-company.sh        # Provision DB + env + start containers
-│   └── backup-postgres.sh       # Dump company databases to backups/
+│   ├── create-company.sh    # Provision DB + env + start containers
+│   └── backup-postgres.sh   # Dump company databases to backups/
 │
-└── backups/                     # Backup output directory
+└── backups/                 # Backup output directory
     └── .gitkeep
 ```
 
@@ -78,92 +69,51 @@ cd /opt/chatwoot
 
 ---
 
-### 2. Configure Traefik
+### 2. Configure the infrastructure
 
-Copy the example env and fill in your real e-mail address.
-Let's Encrypt sends certificate expiry notices to this address.
+Copy the example env and fill in all four values:
 
 ```bash
-cp infrastructure/traefik/.env.example infrastructure/traefik/.env
+cp infra/.env.example infra/.env
 ```
 
-Edit `infrastructure/traefik/.env`:
+Edit `infra/.env`:
 
 ```env
-ACME_EMAIL=you@yourdomain.com    # ← replace with your real e-mail
+ACME_EMAIL=you@yourdomain.com             # ← your real e-mail (for Let's Encrypt)
+POSTGRES_USERNAME=chatwoot
+POSTGRES_PASSWORD=<strong-password>       # generate: openssl rand -hex 32
+REDIS_PASSWORD=<strong-password>          # generate: openssl rand -hex 32
 ```
 
-> ⚠️ **Do not use an `@example.com` address.** Let's Encrypt will reject the
+> ⚠️ **Do not use an `@example.com` address for `ACME_EMAIL`.** Let's Encrypt will reject the
 > account registration with `contact email has forbidden domain "example.com"`.
 
 Create the certificate storage file with strict permissions (required by Traefik):
 
 ```bash
-install -m 600 /dev/null infrastructure/traefik/acme.json
+install -m 600 /dev/null infra/acme.json
 ```
 
 ---
 
-### 3. Configure PostgreSQL
+### 3. Start the infrastructure
 
 ```bash
-cp infrastructure/postgres/.env.example infrastructure/postgres/.env
+docker compose -f infra/docker-compose.yml up -d
 ```
 
-Edit `infrastructure/postgres/.env`:
+This starts Traefik, PostgreSQL, and Redis in one step. Verify everything is healthy:
 
-```env
-POSTGRES_USERNAME=chatwoot
-POSTGRES_PASSWORD=<strong-password>    # generate: openssl rand -hex 32
+```bash
+docker compose -f infra/docker-compose.yml ps
 ```
 
-> ⚠️ **Remember this password** — every company env file must use the same value.
+Expected: all three containers show `Up` or `Up (healthy)`.
 
 ---
 
-### 4. Configure Redis
-
-```bash
-cp infrastructure/redis/.env.example infrastructure/redis/.env
-```
-
-Edit `infrastructure/redis/.env`:
-
-```env
-REDIS_PASSWORD=<strong-password>    # generate: openssl rand -hex 32
-```
-
----
-
-### 5. Start the infrastructure
-
-Start each component in order. Traefik must come first because it declares the
-`chatwoot-net` Docker network that the other containers join.
-
-```bash
-# 1. Traefik (creates chatwoot-net)
-docker compose -f infrastructure/traefik/docker-compose.yml up -d
-
-# 2. PostgreSQL
-docker compose -f infrastructure/postgres/docker-compose.yml up -d
-
-# 3. Redis
-docker compose -f infrastructure/redis/docker-compose.yml up -d
-```
-
-Verify everything is healthy:
-
-```bash
-docker compose -f infrastructure/traefik/docker-compose.yml ps
-docker compose -f infrastructure/postgres/docker-compose.yml ps
-docker compose -f infrastructure/redis/docker-compose.yml ps
-```
-
-Expected output for each: `Status: Up (healthy)` or `Up` for Traefik.
-
----
-
-### 6. Create your first company
+### 4. Create your first company
 
 Use the provided script — it handles database creation, secret generation, and
 container startup automatically:
@@ -175,11 +125,12 @@ scripts/create-company.sh company1 company1.chat.yourdomain.com
 What the script does:
 1. Creates the database `chatwoot_company1` in PostgreSQL.
 2. Copies `chatwoot-template/example.env` to `companies/company1.env` and
-   substitutes all values (credentials from infra `.env` files, freshly
-   generated crypto secrets).
-3. Runs `rails db:chatwoot_prepare` (schema migration) before starting
-   persistent containers — prevents the `FATAL: database does not exist`
-   flood that occurs when the app starts before its schema is provisioned.
+   substitutes all values (credentials from `infra/.env`, freshly generated
+   crypto secrets).
+3. Runs `rails db:chatwoot_prepare` (schema migration) as a one-off container
+   **before** starting persistent processes — prevents the
+   `FATAL: database does not exist` flood that occurs when the app starts
+   before its schema is provisioned.
 4. Starts `chatwoot_company1_web` and `chatwoot_company1_worker`.
 
 After the script completes, open `https://company1.chat.yourdomain.com` in your
@@ -191,9 +142,9 @@ up to 60 seconds on first request).
 
 ---
 
-### 7. Create additional companies
+### 5. Create additional companies
 
-Repeat step 6 for each company. Each one gets its own database, its own
+Repeat step 4 for each company. Each one gets its own database, its own
 isolated containers, and its own TLS certificate — all served from the same
 server and reverse proxy.
 
@@ -230,8 +181,8 @@ Edit `companies/mycompany.env` and set at minimum:
 | `COMPANY_NAME` | `mycompany` |
 | `DOMAIN` | `mycompany.chat.yourdomain.com` |
 | `POSTGRES_DATABASE` | `chatwoot_mycompany` |
-| `POSTGRES_USERNAME` | Must match `infrastructure/postgres/.env` |
-| `POSTGRES_PASSWORD` | Must match `infrastructure/postgres/.env` |
+| `POSTGRES_USERNAME` | Must match `POSTGRES_USERNAME` in `infra/.env` |
+| `POSTGRES_PASSWORD` | Must match `POSTGRES_PASSWORD` in `infra/.env` |
 | `REDIS_URL` | `redis://:<redis-password>@chatwoot_redis:6379/0` |
 | `SECRET_KEY_BASE` | `openssl rand -hex 64` |
 | `ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY` | `openssl rand -hex 32` |
@@ -271,13 +222,12 @@ COMPANY=mycompany DOMAIN=mycompany.chat.yourdomain.com \
 
 ```bash
 # Status
-docker compose -f infrastructure/traefik/docker-compose.yml ps
-docker compose -f infrastructure/postgres/docker-compose.yml ps
-docker compose -f infrastructure/redis/docker-compose.yml ps
+docker compose -f infra/docker-compose.yml ps
 
 # Logs
-docker compose -f infrastructure/traefik/docker-compose.yml logs -f
-docker compose -f infrastructure/postgres/docker-compose.yml logs -f
+docker compose -f infra/docker-compose.yml logs -f
+docker compose -f infra/docker-compose.yml logs -f traefik
+docker compose -f infra/docker-compose.yml logs -f postgres
 
 # Connect to Postgres
 docker exec -it chatwoot_postgres psql -U chatwoot
@@ -348,7 +298,7 @@ gunzip -c backups/chatwoot_company1_20260101_120000.sql.gz \
 for env_file in companies/*.env; do
   company=$(basename "$env_file" .env)
   domain=$(grep '^DOMAIN=' "$env_file" | cut -d= -f2)
-  echo "Upgrading $company…"
+  echo "Upgrading $company..."
   COMPANY="$company" DOMAIN="$domain" \
     docker compose --project-name "chatwoot_${company}" \
     -f chatwoot-template/docker-compose.yml \
@@ -357,7 +307,6 @@ for env_file in companies/*.env; do
     docker compose --project-name "chatwoot_${company}" \
     -f chatwoot-template/docker-compose.yml \
     up -d
-  # Run any pending migrations
   docker exec "chatwoot_${company}_web" bundle exec rails db:migrate
 done
 ```
@@ -365,14 +314,8 @@ done
 ### Upgrade infrastructure
 
 ```bash
-docker compose -f infrastructure/traefik/docker-compose.yml pull && \
-  docker compose -f infrastructure/traefik/docker-compose.yml up -d
-
-docker compose -f infrastructure/postgres/docker-compose.yml pull && \
-  docker compose -f infrastructure/postgres/docker-compose.yml up -d
-
-docker compose -f infrastructure/redis/docker-compose.yml pull && \
-  docker compose -f infrastructure/redis/docker-compose.yml up -d
+docker compose -f infra/docker-compose.yml pull
+docker compose -f infra/docker-compose.yml up -d
 ```
 
 ---
@@ -381,14 +324,13 @@ docker compose -f infrastructure/redis/docker-compose.yml pull && \
 
 ### `contact email has forbidden domain "example.com"`
 
-Your `infrastructure/traefik/.env` still has the placeholder ACME e-mail.
+`ACME_EMAIL` in `infra/.env` is still set to the placeholder.
 
 ```bash
-# Fix:
-nano infrastructure/traefik/.env
+nano infra/.env
 # Set:  ACME_EMAIL=you@yourdomain.com
 
-docker compose -f infrastructure/traefik/docker-compose.yml up -d --force-recreate
+docker compose -f infra/docker-compose.yml up -d --force-recreate traefik
 ```
 
 ---
@@ -398,8 +340,8 @@ docker compose -f infrastructure/traefik/docker-compose.yml up -d --force-recrea
 The `acme.json` file must be readable only by root/Traefik.
 
 ```bash
-chmod 600 infrastructure/traefik/acme.json
-docker compose -f infrastructure/traefik/docker-compose.yml restart
+chmod 600 infra/acme.json
+docker compose -f infra/docker-compose.yml restart traefik
 ```
 
 ---
@@ -424,7 +366,7 @@ instead of the shared Postgres superuser. Fix it:
 
 ```bash
 # Check the correct username
-grep POSTGRES_USERNAME infrastructure/postgres/.env
+grep POSTGRES_USERNAME infra/.env
 
 # Fix the company env
 sed -i "s/^POSTGRES_USERNAME=.*/POSTGRES_USERNAME=chatwoot/" companies/company1.env
@@ -442,20 +384,20 @@ COMPANY=company1 DOMAIN=company1.chat.yourdomain.com \
 
 1. Confirm DNS is propagated: `dig company1.chat.yourdomain.com`
 2. Confirm port 80 is reachable from the internet.
-3. Check Traefik logs for ACME errors:
+3. Check Traefik logs:
    ```bash
-   docker logs chatwoot_traefik 2>&1 | grep -i acme
+   docker compose -f infra/docker-compose.yml logs traefik 2>&1 | grep -i acme
    ```
-4. If you see `acme.json` permission errors, run `chmod 600 infrastructure/traefik/acme.json`
+4. If you see `acme.json` permission errors, run `chmod 600 infra/acme.json`
    and restart Traefik.
 
 ---
 
 ## Security notes
 
-- All `.env` files and `acme.json` are listed in `.gitignore` and must **never** be committed.
+- `infra/.env` and `infra/acme.json` are listed in `.gitignore` and must **never** be committed.
+- `companies/*.env` files are also gitignored — they contain per-company secrets.
 - Each company has unique `SECRET_KEY_BASE` and `ACTIVE_RECORD_ENCRYPTION_*` keys.
 - PostgreSQL and Redis have **no published ports** — only reachable inside `chatwoot-net`.
 - Traefik only routes containers that carry the `traefik.enable=true` label.
-- Back up `infrastructure/*.env` and `companies/*.env` — losing them means losing access to your data.
-
+- Back up `infra/.env` and `companies/*.env` — losing them means losing access to your data.

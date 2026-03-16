@@ -3,12 +3,10 @@
 # =============================================================================
 
 # ---------------------------------------------------------------------------
-# Infrastructure secrets (commit only the .env.example counterparts)
+# Infrastructure secrets (commit only the .env.example counterpart)
 # ---------------------------------------------------------------------------
-infrastructure/traefik/.env
-infrastructure/traefik/acme.json
-infrastructure/postgres/.env
-infrastructure/redis/.env
+infra/.env
+infra/acme.json
 
 # ---------------------------------------------------------------------------
 # Company env files — actual secrets, never commit

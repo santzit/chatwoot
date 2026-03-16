@@ -1,8 +1,8 @@
 # =============================================================================
-# infrastructure/traefik/traefik.yml  –  Traefik v3 static configuration
+# infra/traefik.yml  –  Traefik v3 static configuration
 #
 # ACME e-mail is read from the ACME_EMAIL environment variable.
-# Set it in infrastructure/traefik/.env — do NOT hardcode it here.
+# Set it in infra/.env — do NOT hardcode it here.
 # =============================================================================
 
 # ---------------------------------------------------------------------------
@@ -47,7 +47,7 @@ providers:
 certificatesResolvers:
   letsencrypt:
     acme:
-      # Set ACME_EMAIL in infrastructure/traefik/.env — do NOT edit here.
+      # Set ACME_EMAIL in infra/.env — do NOT edit here.
       email: ${ACME_EMAIL}
       # Must match the bind-mount path in docker-compose.yml.
       storage: /acme.json

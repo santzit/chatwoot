@@ -15,8 +15,7 @@
 #
 # Requirements:
 #   • Run from the repository root.
-#   • infrastructure/traefik, infrastructure/postgres, and infrastructure/redis
-#     must already be running.
+#   • infra/ must already be running (docker compose -f infra/docker-compose.yml up -d).
 #   • openssl must be available (installed by default on Ubuntu).
 # =============================================================================
 
@@ -75,18 +74,18 @@ if [[ -f "$ENV_FILE" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Read shared credentials from infrastructure .env files
+# Read shared credentials from infra/.env
 # ---------------------------------------------------------------------------
-POSTGRES_USERNAME=$(grep -E '^POSTGRES_USERNAME=' infrastructure/postgres/.env 2>/dev/null \
+POSTGRES_USERNAME=$(grep -E '^POSTGRES_USERNAME=' infra/.env 2>/dev/null \
                     | sed 's/^POSTGRES_USERNAME=//' || true)
-POSTGRES_PASSWORD=$(grep -E '^POSTGRES_PASSWORD=' infrastructure/postgres/.env 2>/dev/null \
+POSTGRES_PASSWORD=$(grep -E '^POSTGRES_PASSWORD=' infra/.env 2>/dev/null \
                     | sed 's/^POSTGRES_PASSWORD=//' || true)
-REDIS_PASSWORD=$(grep -E '^REDIS_PASSWORD=' infrastructure/redis/.env 2>/dev/null \
+REDIS_PASSWORD=$(grep -E '^REDIS_PASSWORD=' infra/.env 2>/dev/null \
                   | sed 's/^REDIS_PASSWORD=//' || true)
 
-[[ -n "$POSTGRES_USERNAME" ]] || die "infrastructure/postgres/.env is missing POSTGRES_USERNAME. Run setup first."
-[[ -n "$POSTGRES_PASSWORD" ]] || die "infrastructure/postgres/.env is missing POSTGRES_PASSWORD. Run setup first."
-[[ -n "$REDIS_PASSWORD" ]]    || die "infrastructure/redis/.env is missing REDIS_PASSWORD. Run setup first."
+[[ -n "$POSTGRES_USERNAME" ]] || die "infra/.env is missing POSTGRES_USERNAME. Copy infra/.env.example to infra/.env and fill in the values."
+[[ -n "$POSTGRES_PASSWORD" ]] || die "infra/.env is missing POSTGRES_PASSWORD. Copy infra/.env.example to infra/.env and fill in the values."
+[[ -n "$REDIS_PASSWORD" ]]    || die "infra/.env is missing REDIS_PASSWORD. Copy infra/.env.example to infra/.env and fill in the values."
 
 echo ""
 echo -e "${CYAN}Creating company: ${COMPANY}${RESET}"
