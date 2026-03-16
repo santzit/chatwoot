@@ -81,6 +81,7 @@ services:
       --requirepass ${REDIS_PASSWORD}
       --save 60 1
       --loglevel warning
+      --ignore-warnings OVERCOMMIT_MEMORY
     volumes:
       - redis_data:/data
     healthcheck:

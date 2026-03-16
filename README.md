@@ -322,9 +322,76 @@ docker compose -f infra/docker-compose.yml up -d
 
 ## Troubleshooting
 
+### `unable to parse email address` (ACME / Let's Encrypt)
+
+`ACME_EMAIL` in `infra/.env` is empty or uses a display-name format that the
+ACME protocol does not accept.
+
+```bash
+nano infra/.env
+# MUST be a plain address — no display name, no angle brackets:
+#   ✔  ACME_EMAIL=you@yourdomain.com
+#   ✖  ACME_EMAIL=Your Name <you@yourdomain.com>
+#   ✖  ACME_EMAIL=          (empty)
+
+docker compose -f infra/docker-compose.yml up -d --force-recreate traefik
+```
+
+---
+
+### Chatwoot is not sending e-mails (invitations, login links, notifications)
+
+SMTP is not configured. Open the company's env file and fill in the SMTP block:
+
+```bash
+nano companies/<company>.env
+# Fill in every SMTP_* variable and MAILER_SENDER_EMAIL.
+# Example using Gmail App Password:
+#   SMTP_ADDRESS=smtp.gmail.com
+#   SMTP_PORT=587
+#   SMTP_DOMAIN=yourdomain.com
+#   SMTP_USERNAME=you@gmail.com
+#   SMTP_PASSWORD=<16-char app password>
+#   SMTP_AUTHENTICATION=plain
+#   SMTP_ENABLE_STARTTLS_AUTO=true
+#   MAILER_SENDER_EMAIL=support@yourdomain.com
+
+# Restart the company stack to pick up the new settings:
+COMPANY=<company> DOMAIN=<domain> \
+  docker compose --project-name chatwoot_<company> \
+  -f chatwoot-template/docker-compose.yml \
+  up -d
+```
+
+> 💡 Free SMTP relays: [Resend](https://resend.com), [SendGrid](https://sendgrid.com),
+> [Mailgun](https://mailgun.com). All provide generous free tiers.
+
+---
+
+### Redis `WARNING Memory overcommit must be enabled!`
+
+This is a Redis advisory about the host kernel parameter `vm.overcommit_memory`.
+It is silenced automatically by the `--ignore-warnings OVERCOMMIT_MEMORY` flag
+added to the Redis command in `infra/docker-compose.yml`.
+
+If you see it on an older deployment, either recreate the Redis container:
+
+```bash
+docker compose -f infra/docker-compose.yml up -d --force-recreate redis
+```
+
+Or permanently fix it on the **host** (recommended for production):
+
+```bash
+echo 'vm.overcommit_memory = 1' | sudo tee -a /etc/sysctl.conf
+sudo sysctl -p
+```
+
+---
+
 ### `contact email has forbidden domain "example.com"`
 
-`ACME_EMAIL` in `infra/.env` is still set to the placeholder.
+`ACME_EMAIL` in `infra/.env` is still set to the example.com placeholder.
 
 ```bash
 nano infra/.env
