@@ -67,6 +67,11 @@ services:
       - "traefik.http.routers.${COMPANY}.tls=true"
       - "traefik.http.routers.${COMPANY}.tls.certresolver=letsencrypt"
       - "traefik.http.services.${COMPANY}.loadbalancer.server.port=3000"
+      # Sticky sessions — required for Chatwoot WebSockets (ActionCable).
+      - "traefik.http.services.${COMPANY}.loadbalancer.sticky.cookie=true"
+      - "traefik.http.services.${COMPANY}.loadbalancer.sticky.cookie.name=chatwoot_sticky"
+      - "traefik.http.services.${COMPANY}.loadbalancer.sticky.cookie.secure=true"
+      - "traefik.http.services.${COMPANY}.loadbalancer.sticky.cookie.httpOnly=true"
 
   # ---------------------------------------------------------------------------
   # Worker — Sidekiq background job processor
