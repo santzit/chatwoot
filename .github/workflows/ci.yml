@@ -62,105 +62,27 @@ jobs:
           echo "✔ PostgreSQL healthy"
 
       # -----------------------------------------------------------------------
-      # 3. Create testco company env file
+      # 3. Create testco company via the shared script
+      # This replaces the manual env-file generation, database creation,
+      # schema provisioning, and docker compose up steps so that CI uses
+      # exactly the same code path as production.
       # -----------------------------------------------------------------------
-      - name: Generate companies/testco.env
-        run: |
-          SECRET=$(openssl rand -hex 64)
-          DET=$(openssl rand -hex 32)
-          SALT=$(openssl rand -hex 32)
-          PRIM=$(openssl rand -hex 32)
-          cat > companies/testco.env << EOF
-          COMPANY_NAME=testco
-          DOMAIN=testco.chat.example.com
-          RAILS_ENV=production
-          RAILS_LOG_TO_STDOUT=true
-          SECRET_KEY_BASE=$SECRET
-          ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY=$DET
-          ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT=$SALT
-          ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY=$PRIM
-          POSTGRES_HOST=chatwoot_postgres
-          POSTGRES_PORT=5432
-          POSTGRES_DATABASE=chatwoot_testco
-          POSTGRES_USERNAME=chatwoot
-          POSTGRES_PASSWORD=testpass
-          REDIS_URL=redis://:testredis@chatwoot_redis:6379/0
-          SMTP_ADDRESS=localhost
-          SMTP_PORT=587
-          SMTP_USERNAME=ci@example.org
-          SMTP_PASSWORD=smtppass
-          SMTP_AUTHENTICATION=plain
-          SMTP_ENABLE_STARTTLS_AUTO=true
-          MAILER_SENDER_EMAIL=CI Test <ci@example.org>
-          EOF
-          echo "✔ companies/testco.env generated"
+      - name: Create testco company
+        timeout-minutes: 15
+        run: bash scripts/create-company.sh testco testco.chat.example.com
 
-      - name: Generate companies/testco_evo.env
+      # Read the Evolution API key that the script generated and mask it so
+      # it never appears in plain text in the CI log.
+      - name: Export and mask Evolution API key
         run: |
-          EVO_KEY=$(openssl rand -hex 32)
+          EVO_KEY=$(grep -E '^AUTHENTICATION_API_KEY=' companies/testco_evo.env \
+            | sed 's/^AUTHENTICATION_API_KEY=//')
           echo "::add-mask::$EVO_KEY"
           echo "EVO_KEY=$EVO_KEY" >> "$GITHUB_ENV"
-          cat > companies/testco_evo.env << EOF
-          AUTHENTICATION_API_KEY=$EVO_KEY
-          DATABASE_ENABLED=true
-          DATABASE_PROVIDER=postgresql
-          DATABASE_CONNECTION_URI=postgresql://chatwoot:testpass@chatwoot_postgres:5432/evolution_testco
-          DATABASE_CONNECTION_CLIENT_NAME=evolution_testco
-          DATABASE_SAVE_DATA_INSTANCE=true
-          DATABASE_SAVE_DATA_NEW_MESSAGE=true
-          DATABASE_SAVE_MESSAGE_UPDATE=true
-          DATABASE_SAVE_DATA_CONTACTS=true
-          DATABASE_SAVE_DATA_CHATS=true
-          DATABASE_SAVE_DATA_LABELS=true
-          DATABASE_SAVE_DATA_HISTORIC=true
-          CACHE_REDIS_ENABLED=true
-          CACHE_REDIS_URI=redis://:testredis@chatwoot_redis:6379/1
-          CACHE_REDIS_PREFIX_KEY=evolution_testco
-          CACHE_REDIS_SAVE_INSTANCES=false
-          CACHE_LOCAL_ENABLED=false
-          DEL_INSTANCE=false
-          EOF
-          echo "✔ companies/testco_evo.env generated"
 
       # -----------------------------------------------------------------------
-      # 4. Provision the company database
-      # Run rails db:chatwoot_prepare as a one-off container (same as the real
-      # scripts/create-company.sh flow) so the schema exists before the
-      # persistent web/worker containers start — preventing the
-      # "FATAL: database does not exist" flood this project was built to fix.
+      # 4. Verify containers are running
       # -----------------------------------------------------------------------
-      - name: Create chatwoot_testco database
-        run: |
-          docker exec chatwoot_postgres \
-            psql -U chatwoot -d postgres -c "CREATE DATABASE chatwoot_testco;"
-          echo "✔ chatwoot_testco database created"
-
-      - name: Create evolution_testco database
-        run: |
-          docker exec chatwoot_postgres \
-            psql -U chatwoot -d postgres -c "CREATE DATABASE evolution_testco;"
-          echo "✔ evolution_testco database created"
-
-      - name: Run rails db:chatwoot_prepare (provision schema)
-        timeout-minutes: 10
-        run: |
-          docker compose \
-            --project-name chatwoot_testco \
-            -f chatwoot-template/docker-compose.yml \
-            run --rm web bundle exec rails db:chatwoot_prepare
-          echo "✔ Schema provisioned"
-
-      # -----------------------------------------------------------------------
-      # 5. Start testco and verify it stays up
-      # -----------------------------------------------------------------------
-      - name: Start testco web + worker
-        run: |
-          docker compose \
-            --project-name chatwoot_testco \
-            -f chatwoot-template/docker-compose.yml \
-            up -d
-          echo "✔ testco containers started"
-
       - name: Verify testco containers are running
         run: |
           sleep 15
@@ -177,7 +99,7 @@ jobs:
           echo "✔ testco web and worker are running"
 
       # -----------------------------------------------------------------------
-      # 6. Assert no FATAL database errors in postgres log
+      # 5. Assert no FATAL database errors in postgres log
       # -----------------------------------------------------------------------
       - name: Assert no FATAL database errors in postgres log
         run: |
@@ -191,7 +113,7 @@ jobs:
           echo "✔ No FATAL database errors in postgres log"
 
       # -----------------------------------------------------------------------
-      # 7. Assert no FATAL errors in chatwoot web / worker logs
+      # 6. Assert no FATAL errors in chatwoot web / worker logs
       # -----------------------------------------------------------------------
       - name: Assert no FATAL errors in chatwoot web log
         run: |
@@ -214,7 +136,7 @@ jobs:
           echo "✔ No FATAL errors in chatwoot worker log"
 
       # -----------------------------------------------------------------------
-      # 8. Evolution API — wait, HTTP access check, POST /instance/create,
+      # 7. Evolution API — wait, HTTP access check, POST /instance/create,
       #    then assert no startup errors in log (log check is last so it
       #    captures the full picture after all functional tests complete).
       # -----------------------------------------------------------------------
