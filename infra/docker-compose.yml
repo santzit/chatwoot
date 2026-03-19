@@ -70,6 +70,11 @@ services:
 
   # ===========================================================================
   # Redis  –  shared instance (password-protected, persistence enabled)
+  #
+  # Shared by Chatwoot (Sidekiq queues + ActionCable, DB 0) and Evolution API
+  # (cache, DB 1).  maxmemory + volatile-lru prevent unbounded memory growth:
+  # only keys that carry a TTL are evicted, so Sidekiq's persistent job-queue
+  # keys are never discarded.  Adjust maxmemory to your server's available RAM.
   # ===========================================================================
   redis:
     image: redis:7-alpine
@@ -77,12 +82,17 @@ services:
     restart: unless-stopped
     networks:
       - chatwoot-net
+    # Expose REDIS_PASSWORD so the healthcheck shell can read it as $REDIS_PASSWORD.
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
     command: >
       redis-server
       --requirepass ${REDIS_PASSWORD}
       --save 60 1
       --loglevel warning
       --ignore-warnings OVERCOMMIT_MEMORY
+      --maxmemory 512mb
+      --maxmemory-policy volatile-lru
     volumes:
       - redis_data:/data
     healthcheck:
