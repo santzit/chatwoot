@@ -70,7 +70,6 @@ jobs:
           DET=$(openssl rand -hex 32)
           SALT=$(openssl rand -hex 32)
           PRIM=$(openssl rand -hex 32)
-          EVO_KEY=$(openssl rand -hex 32)
           cat > companies/testco.env << EOF
           COMPANY_NAME=testco
           DOMAIN=testco.chat.example.com
@@ -93,6 +92,15 @@ jobs:
           SMTP_AUTHENTICATION=plain
           SMTP_ENABLE_STARTTLS_AUTO=true
           MAILER_SENDER_EMAIL=CI Test <ci@example.org>
+          EOF
+          echo "✔ companies/testco.env generated"
+
+      - name: Generate companies/testco_evo.env
+        run: |
+          EVO_KEY=$(openssl rand -hex 32)
+          echo "::add-mask::$EVO_KEY"
+          echo "EVO_KEY=$EVO_KEY" >> "$GITHUB_ENV"
+          cat > companies/testco_evo.env << EOF
           AUTHENTICATION_API_KEY=$EVO_KEY
           DATABASE_ENABLED=true
           DATABASE_PROVIDER=postgresql
@@ -112,7 +120,7 @@ jobs:
           CACHE_LOCAL_ENABLED=false
           DEL_INSTANCE=false
           EOF
-          echo "✔ companies/testco.env generated"
+          echo "✔ companies/testco_evo.env generated"
 
       # -----------------------------------------------------------------------
       # 4. Provision the company database
@@ -206,8 +214,47 @@ jobs:
           echo "✔ No FATAL errors in chatwoot worker log"
 
       # -----------------------------------------------------------------------
-      # 8. Assert no ERROR-level startup failures in evolution log
+      # 8. Evolution API — wait, HTTP access check, POST /instance/create,
+      #    then assert no startup errors in log (log check is last so it
+      #    captures the full picture after all functional tests complete).
       # -----------------------------------------------------------------------
+      - name: Wait for Evolution API to be ready
+        run: |
+          EVO_IP=$(docker inspect chatwoot_testco_evolution \
+            --format '{{(index .NetworkSettings.Networks "chatwoot-net").IPAddress}}')
+          echo "EVO_IP=$EVO_IP" >> "$GITHUB_ENV"
+          echo "Waiting for Evolution API at http://${EVO_IP}:8080 …"
+          timeout 60 bash -c \
+            "until curl -sf http://${EVO_IP}:8080/ > /dev/null 2>&1; do sleep 3; done"
+          echo "✔ Evolution API is ready"
+
+      - name: HTTP access check — Evolution API root
+        run: |
+          HTTP_STATUS=$(curl -s -o /dev/null -w '%{http_code}' \
+            "http://${EVO_IP}:8080/")
+          if [ "$HTTP_STATUS" != "200" ]; then
+            echo "❌ Evolution API root returned HTTP $HTTP_STATUS (expected 200)"
+            exit 1
+          fi
+          echo "✔ Evolution API returned HTTP 200"
+
+      - name: POST /instance/create — create CI test WhatsApp instance
+        run: |
+          RESPONSE=$(curl -s -w '\n%{http_code}' -X POST \
+            "http://${EVO_IP}:8080/instance/create" \
+            -H "apikey: ${{ env.EVO_KEY }}" \
+            -H "Content-Type: application/json" \
+            -d '{"instanceName":"ci-test","integration":"WHATSAPP-BAILEYS"}')
+          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+          BODY=$(echo "$RESPONSE" | head -n -1)
+          if [ "$HTTP_CODE" != "201" ]; then
+            echo "❌ POST /instance/create returned HTTP $HTTP_CODE (expected 201)"
+            echo "Response body: $BODY"
+            exit 1
+          fi
+          echo "✔ POST /instance/create succeeded (HTTP 201)"
+          echo "Response: $BODY"
+
       - name: Assert no startup errors in evolution log
         run: |
           if docker logs chatwoot_testco_evolution 2>&1 \
