@@ -1,0 +1,2 @@
+# Backups produced by scripts/backup-postgres.sh are stored here.
+# All *.sql.gz files are listed in .gitignore.

@@ -1,0 +1,170 @@
+# =============================================================================
+# .github/workflows/ci.yml
+#
+# Single job: spin up infra, create the testco company, and verify it runs.
+# =============================================================================
+
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+permissions:
+  contents: read
+
+jobs:
+
+  test:
+    name: Spin up infra + testco company
+    runs-on: ubuntu-latest
+
+    # COMPANY and DOMAIN are exported to every step so Docker Compose can
+    # interpolate them in chatwoot-template/docker-compose.yml.
+    env:
+      COMPANY: testco
+      DOMAIN: testco.chat.example.com
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # -----------------------------------------------------------------------
+      # 1. Configure infra
+      # -----------------------------------------------------------------------
+      - name: Configure infra/.env and acme.json
+        run: |
+          printf '%s\n' \
+            'ACME_EMAIL=ci@example.org' \
+            'POSTGRES_USERNAME=chatwoot' \
+            'POSTGRES_PASSWORD=testpass' \
+            'REDIS_PASSWORD=testredis' \
+            > infra/.env
+          install -m 600 /dev/null infra/acme.json
+
+      # -----------------------------------------------------------------------
+      # 2. Start shared infrastructure
+      # Traefik is skipped to avoid binding ports 80/443 on the CI runner.
+      # Starting postgres + redis still creates the chatwoot-net network
+      # (declared in infra/docker-compose.yml) so company containers can join it.
+      # -----------------------------------------------------------------------
+      - name: Start PostgreSQL and Redis
+        run: docker compose -f infra/docker-compose.yml up -d postgres redis
+
+      - name: Wait for PostgreSQL to be healthy
+        run: |
+          timeout 60 bash -c \
+            'until docker inspect chatwoot_postgres \
+               --format "{{.State.Health.Status}}" 2>/dev/null \
+               | grep -q "^healthy$"; \
+             do sleep 2; done'
+          echo "✔ PostgreSQL healthy"
+
+      # -----------------------------------------------------------------------
+      # 3. Create testco company env file
+      # -----------------------------------------------------------------------
+      - name: Generate companies/testco.env
+        run: |
+          SECRET=$(openssl rand -hex 64)
+          DET=$(openssl rand -hex 32)
+          SALT=$(openssl rand -hex 32)
+          PRIM=$(openssl rand -hex 32)
+          cat > companies/testco.env << EOF
+          COMPANY_NAME=testco
+          DOMAIN=testco.chat.example.com
+          RAILS_ENV=production
+          RAILS_LOG_TO_STDOUT=true
+          SECRET_KEY_BASE=$SECRET
+          ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY=$DET
+          ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT=$SALT
+          ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY=$PRIM
+          POSTGRES_HOST=chatwoot_postgres
+          POSTGRES_PORT=5432
+          POSTGRES_DATABASE=chatwoot_testco
+          POSTGRES_USERNAME=chatwoot
+          POSTGRES_PASSWORD=testpass
+          REDIS_URL=redis://:testredis@chatwoot_redis:6379/0
+          SMTP_ADDRESS=localhost
+          SMTP_PORT=587
+          SMTP_USERNAME=ci@example.org
+          SMTP_PASSWORD=smtppass
+          SMTP_AUTHENTICATION=plain
+          SMTP_ENABLE_STARTTLS_AUTO=true
+          MAILER_SENDER_EMAIL=CI Test <ci@example.org>
+          EOF
+          echo "✔ companies/testco.env generated"
+
+      # -----------------------------------------------------------------------
+      # 4. Provision the company database
+      # Run rails db:chatwoot_prepare as a one-off container (same as the real
+      # scripts/create-company.sh flow) so the schema exists before the
+      # persistent web/worker containers start — preventing the
+      # "FATAL: database does not exist" flood this project was built to fix.
+      # -----------------------------------------------------------------------
+      - name: Create chatwoot_testco database
+        run: |
+          docker exec chatwoot_postgres \
+            psql -U chatwoot -d postgres -c "CREATE DATABASE chatwoot_testco;"
+          echo "✔ chatwoot_testco database created"
+
+      - name: Run rails db:chatwoot_prepare (provision schema)
+        timeout-minutes: 10
+        run: |
+          docker compose \
+            --project-name chatwoot_testco \
+            -f chatwoot-template/docker-compose.yml \
+            run --rm web bundle exec rails db:chatwoot_prepare
+          echo "✔ Schema provisioned"
+
+      # -----------------------------------------------------------------------
+      # 5. Start testco and verify it stays up
+      # -----------------------------------------------------------------------
+      - name: Start testco web + worker
+        run: |
+          docker compose \
+            --project-name chatwoot_testco \
+            -f chatwoot-template/docker-compose.yml \
+            up -d
+          echo "✔ testco containers started"
+
+      - name: Verify testco containers are running
+        run: |
+          sleep 15
+          EXITED=$(docker ps -a \
+            --filter name=chatwoot_testco \
+            --filter status=exited \
+            --format "{{.Names}}")
+          if [ -n "$EXITED" ]; then
+            echo "❌ Container(s) exited unexpectedly: $EXITED"
+            docker logs chatwoot_testco_web 2>&1 | tail -30
+            exit 1
+          fi
+          docker ps --filter name=chatwoot_testco
+          echo "✔ testco web and worker are running"
+
+      # -----------------------------------------------------------------------
+      # 6. Assert no FATAL database errors in postgres log
+      # -----------------------------------------------------------------------
+      - name: Assert no FATAL database errors in postgres log
+        run: |
+          if docker compose -f infra/docker-compose.yml logs postgres 2>&1 \
+              | grep -qE 'FATAL.*database.*does not exist'; then
+            echo "❌ Found FATAL 'database does not exist' in postgres logs:"
+            docker compose -f infra/docker-compose.yml logs postgres \
+              | grep -E 'FATAL.*database.*does not exist'
+            exit 1
+          fi
+          echo "✔ No FATAL database errors in postgres log"
+
+      # -----------------------------------------------------------------------
+      # Tear down
+      # -----------------------------------------------------------------------
+      - name: Tear down
+        if: always()
+        run: |
+          docker compose \
+            --project-name chatwoot_testco \
+            -f chatwoot-template/docker-compose.yml \
+            down -v 2>/dev/null || true
+          docker compose -f infra/docker-compose.yml down -v
