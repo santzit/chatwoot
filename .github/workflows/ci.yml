@@ -183,6 +183,43 @@ jobs:
           echo "✔ No FATAL database errors in postgres log"
 
       # -----------------------------------------------------------------------
+      # 7. Assert no FATAL errors in chatwoot web / worker logs
+      # -----------------------------------------------------------------------
+      - name: Assert no FATAL errors in chatwoot web log
+        run: |
+          if docker logs chatwoot_testco_web 2>&1 \
+              | grep -qE '^F,|FATAL'; then
+            echo "❌ Found FATAL error(s) in chatwoot web logs:"
+            docker logs chatwoot_testco_web 2>&1 | grep -E '^F,|FATAL'
+            exit 1
+          fi
+          echo "✔ No FATAL errors in chatwoot web log"
+
+      - name: Assert no FATAL errors in chatwoot worker log
+        run: |
+          if docker logs chatwoot_testco_worker 2>&1 \
+              | grep -qE '^F,|FATAL'; then
+            echo "❌ Found FATAL error(s) in chatwoot worker logs:"
+            docker logs chatwoot_testco_worker 2>&1 | grep -E '^F,|FATAL'
+            exit 1
+          fi
+          echo "✔ No FATAL errors in chatwoot worker log"
+
+      # -----------------------------------------------------------------------
+      # 8. Assert no ERROR-level startup failures in evolution log
+      # -----------------------------------------------------------------------
+      - name: Assert no startup errors in evolution log
+        run: |
+          if docker logs chatwoot_testco_evolution 2>&1 \
+              | grep -qiE '\[ERROR\]|\bERROR\b.*Exception|\bERROR\b.*ECONNREFUSED|\bERROR\b.*Cannot connect'; then
+            echo "❌ Found ERROR(s) in evolution logs:"
+            docker logs chatwoot_testco_evolution 2>&1 \
+              | grep -iE '\[ERROR\]|\bERROR\b.*Exception|\bERROR\b.*ECONNREFUSED|\bERROR\b.*Cannot connect'
+            exit 1
+          fi
+          echo "✔ No startup errors in evolution log"
+
+      # -----------------------------------------------------------------------
       # Tear down
       # -----------------------------------------------------------------------
       - name: Tear down
