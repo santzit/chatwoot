@@ -2,11 +2,15 @@
 # =============================================================================
 # scripts/create-company.sh
 #
-# Creates a new Chatwoot company instance:
+# Creates a new Chatwoot company instance, or restarts it if it already exists:
 #   1. Creates a dedicated Postgres database (chatwoot_<company>).
 #   2. Creates a dedicated Postgres database for Evolution API (evolution_<company>).
 #   3. Generates companies/<company>.env from the template with fresh secrets.
 #   4. Starts the web + worker + evolution containers using the shared compose template.
+#
+# If companies/<company>.env already exists the script skips steps 1–3 and
+# simply restarts the running containers (docker compose down → up), preserving
+# all existing secrets and data.
 #
 # Usage:
 #   scripts/create-company.sh <company-name> <domain>
@@ -69,10 +73,12 @@ EVOLUTION_DB="evolution_${COMPANY}"
 ENV_FILE="companies/${COMPANY}.env"
 
 # ---------------------------------------------------------------------------
-# Guard: refuse to overwrite an existing company
+# Detect update vs. fresh create
 # ---------------------------------------------------------------------------
+UPDATE=false
 if [[ -f "$ENV_FILE" ]]; then
-  die "${ENV_FILE} already exists. Remove it first if you want to recreate the company."
+  UPDATE=true
+  warn "${ENV_FILE} already exists — updating containers (env and secrets will NOT change)."
 fi
 
 # ---------------------------------------------------------------------------
@@ -98,8 +104,9 @@ echo "  Env file:     ${ENV_FILE}"
 echo ""
 
 # ---------------------------------------------------------------------------
-# 1. Create the Postgres databases
+# 1. Create the Postgres databases (skipped on update — they already exist)
 # ---------------------------------------------------------------------------
+if [[ "$UPDATE" == false ]]; then
 info "Creating database ${DB}…"
 if docker exec chatwoot_postgres psql -U "$POSTGRES_USERNAME" -d postgres \
     -c "CREATE DATABASE \"${DB}\";" 2>/dev/null; then
@@ -115,10 +122,12 @@ if docker exec chatwoot_postgres psql -U "$POSTGRES_USERNAME" -d postgres \
 else
   warn "Database ${EVOLUTION_DB} may already exist — continuing."
 fi
+fi
 
 # ---------------------------------------------------------------------------
-# 2. Generate the company .env from the template
+# 2. Generate the company .env from the template (skipped on update)
 # ---------------------------------------------------------------------------
+if [[ "$UPDATE" == false ]]; then
 info "Generating ${ENV_FILE}…"
 
 SECRET_KEY=$(openssl rand -hex 64)
@@ -156,10 +165,12 @@ echo -e "${YELLOW}⚠  Review ${ENV_FILE} and update SMTP settings before going 
 echo -e "${YELLOW}⚠  Configure Evolution API instances via Chatwoot's API or the Evolution API HTTP endpoint (internal: http://chatwoot_${COMPANY}_evolution:8080).${RESET}"
 echo -e "${YELLOW}⚠  Your Evolution API key is stored in ${ENV_FILE} (AUTHENTICATION_API_KEY).${RESET}"
 echo ""
+fi
 
 # ---------------------------------------------------------------------------
-# 3. Provision the database schema (rails db:chatwoot_prepare)
+# 3. Provision the database schema (skipped on update)
 # ---------------------------------------------------------------------------
+if [[ "$UPDATE" == false ]]; then
 info "Provisioning database schema for ${COMPANY}…"
 if docker compose \
     --project-name "chatwoot_${COMPANY}" \
@@ -175,17 +186,29 @@ else
   error "    run web bundle exec rails db:chatwoot_prepare"
   exit 1
 fi
+fi
 
 # ---------------------------------------------------------------------------
-# 4. Start the company stack
+# 4. Start (or restart) the company stack
 # ---------------------------------------------------------------------------
+if [[ "$UPDATE" == true ]]; then
+  info "Restarting ${COMPANY} stack (down → up)…"
+  docker compose \
+    --project-name "chatwoot_${COMPANY}" \
+    -f chatwoot-template/docker-compose.yml \
+    down
+fi
 info "Starting ${COMPANY} stack…"
 docker compose \
   --project-name "chatwoot_${COMPANY}" \
   -f chatwoot-template/docker-compose.yml \
   up -d
 
-success "${COMPANY} is running at https://${DOMAIN}"
+if [[ "$UPDATE" == true ]]; then
+  success "${COMPANY} containers restarted at https://${DOMAIN}"
+else
+  success "${COMPANY} is running at https://${DOMAIN}"
+fi
 echo ""
 echo "Useful commands:"
 echo "  Logs:    COMPANY=${COMPANY} DOMAIN=${DOMAIN} docker compose --project-name chatwoot_${COMPANY} -f chatwoot-template/docker-compose.yml logs -f web"
