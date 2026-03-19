@@ -70,6 +70,7 @@ jobs:
           DET=$(openssl rand -hex 32)
           SALT=$(openssl rand -hex 32)
           PRIM=$(openssl rand -hex 32)
+          EVO_KEY=$(openssl rand -hex 32)
           cat > companies/testco.env << EOF
           COMPANY_NAME=testco
           DOMAIN=testco.chat.example.com
@@ -92,6 +93,24 @@ jobs:
           SMTP_AUTHENTICATION=plain
           SMTP_ENABLE_STARTTLS_AUTO=true
           MAILER_SENDER_EMAIL=CI Test <ci@example.org>
+          AUTHENTICATION_API_KEY=$EVO_KEY
+          DATABASE_ENABLED=true
+          DATABASE_PROVIDER=postgresql
+          DATABASE_CONNECTION_URI=postgresql://chatwoot:testpass@chatwoot_postgres:5432/evolution_testco
+          DATABASE_CONNECTION_CLIENT_NAME=evolution_testco
+          DATABASE_SAVE_DATA_INSTANCE=true
+          DATABASE_SAVE_DATA_NEW_MESSAGE=true
+          DATABASE_SAVE_MESSAGE_UPDATE=true
+          DATABASE_SAVE_DATA_CONTACTS=true
+          DATABASE_SAVE_DATA_CHATS=true
+          DATABASE_SAVE_DATA_LABELS=true
+          DATABASE_SAVE_DATA_HISTORIC=true
+          CACHE_REDIS_ENABLED=true
+          CACHE_REDIS_URI=redis://:testredis@chatwoot_redis:6379/1
+          CACHE_REDIS_PREFIX_KEY=evolution_testco
+          CACHE_REDIS_SAVE_INSTANCES=false
+          CACHE_LOCAL_ENABLED=false
+          DEL_INSTANCE=false
           EOF
           echo "✔ companies/testco.env generated"
 
@@ -107,6 +126,12 @@ jobs:
           docker exec chatwoot_postgres \
             psql -U chatwoot -d postgres -c "CREATE DATABASE chatwoot_testco;"
           echo "✔ chatwoot_testco database created"
+
+      - name: Create evolution_testco database
+        run: |
+          docker exec chatwoot_postgres \
+            psql -U chatwoot -d postgres -c "CREATE DATABASE evolution_testco;"
+          echo "✔ evolution_testco database created"
 
       - name: Run rails db:chatwoot_prepare (provision schema)
         timeout-minutes: 10
