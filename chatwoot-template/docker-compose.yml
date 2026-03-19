@@ -107,7 +107,7 @@ services:
   # base URL when constructing webhook payloads sent to Chatwoot.
   # ---------------------------------------------------------------------------
   evolution:
-    image: atendai/evolution-api:latest
+    image: atendai/evolution-api:v2.3.7
     container_name: chatwoot_${COMPANY}_evolution
     env_file:
       - ../companies/${COMPANY}.env
