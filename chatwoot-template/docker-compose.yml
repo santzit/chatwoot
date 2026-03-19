@@ -14,15 +14,17 @@
 # Or, simpler: use scripts/create-company.sh <company> <domain>
 #
 # Required environment variables (pass on the command line or via shell):
-#   COMPANY  – unique company slug (e.g. mycompany); used for container names
-#              and Traefik router/service names.
-#   DOMAIN   – full public hostname (e.g. mycompany.chat.example.com);
-#              read from companies/${COMPANY}.env by the create-company script.
+#   COMPANY  – unique company slug (e.g. mycompany); used for container
+#              names and Traefik router/service names.
+#   DOMAIN   – full public hostname for Chatwoot
+#              (e.g. mycompany.chat.example.com).
 #
 # Prerequisites:
 #   • infra/ must be running so that the chatwoot-net network already exists:
 #       docker compose -f infra/docker-compose.yml up -d
 #   • A company database (chatwoot_${COMPANY}) must exist in Postgres.
+#     scripts/create-company.sh creates it automatically.
+#   • An Evolution API database (evolution_${COMPANY}) must exist in Postgres.
 #     scripts/create-company.sh creates it automatically.
 # =============================================================================
 
@@ -90,6 +92,34 @@ services:
     networks:
       - chatwoot-net
 
+  # ---------------------------------------------------------------------------
+  # Evolution API — WhatsApp integration bridge (internal only)
+  #
+  # This container is NOT exposed to the internet — no Traefik labels, no
+  # published ports.  All traffic with Chatwoot travels over the shared
+  # chatwoot-net Docker bridge using the internal container hostname
+  # (chatwoot_${COMPANY}_web:3000).
+  #
+  # Outbound internet access (to WhatsApp servers) works automatically via
+  # the default Docker NAT gateway — no extra configuration is required.
+  #
+  # SERVER_URL is set to the internal address so Evolution API knows its own
+  # base URL when constructing webhook payloads sent to Chatwoot.
+  # ---------------------------------------------------------------------------
+  evolution:
+    image: atendai/evolution-api:v2
+    container_name: chatwoot_${COMPANY}_evolution
+    env_file:
+      - ../companies/${COMPANY}.env
+    environment:
+      # Internal address — Evolution API is not reachable from outside.
+      SERVER_URL: "http://chatwoot_${COMPANY}_evolution:8080"
+    restart: unless-stopped
+    volumes:
+      - evolution_instances:/evolution/instances
+    networks:
+      - chatwoot-net
+
 # =============================================================================
 # Network — joins the shared network declared by the Traefik compose.
 # =============================================================================
@@ -103,3 +133,5 @@ networks:
 # =============================================================================
 volumes:
   storage:
+  # WhatsApp session data and media cache for Evolution API.
+  evolution_instances:

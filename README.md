@@ -1,6 +1,6 @@
 # Chatwoot — Multi-Tenant Self-Hosted Docker Compose
 
-Self-hosted [Chatwoot](https://www.chatwoot.com/) platform that runs **multiple isolated company instances** behind a single **Traefik** reverse proxy, sharing one PostgreSQL cluster and one Redis instance.
+Self-hosted [Chatwoot](https://www.chatwoot.com/) platform that runs **multiple isolated company instances** behind a single **Traefik** reverse proxy, sharing one PostgreSQL cluster and one Redis instance. Each company instance includes an **Evolution API** container that bridges WhatsApp (via Baileys) with Chatwoot over the internal Docker network.
 
 ```
 Internet
@@ -9,12 +9,15 @@ Internet
 Traefik  (ports 80 / 443, automatic TLS via Let's Encrypt)
     │
     ├── company1.chat.yourdomain.com  →  chatwoot_company1_web
-    ├── company2.chat.yourdomain.com  →  chatwoot_company2_web
-    └── company3.chat.yourdomain.com  →  chatwoot_company3_web
+    └── company2.chat.yourdomain.com  →  chatwoot_company2_web
+
+Internal Docker network (chatwoot-net)  ←→  WhatsApp servers (outbound)
+    ├── chatwoot_company1_evolution  (internal only — not exposed to internet)
+    └── chatwoot_company2_evolution  (internal only — not exposed to internet)
 
 Shared infrastructure  (infra/)
-    ├── PostgreSQL 16  (one database per company)
-    └── Redis 7
+    ├── PostgreSQL 16  (chatwoot_<company> + evolution_<company> databases)
+    └── Redis 7        (DB 0 for Chatwoot, DB 1 for Evolution API)
 ```
 
 ---
@@ -32,13 +35,14 @@ chatwoot-platform/
 │
 ├── chatwoot-template/
 │   ├── docker-compose.yml   # Shared template — same for every company
+│   │                        # (web + worker + evolution services)
 │   └── example.env          # Company env template
 │
 ├── companies/               # Per-company .env files (all gitignored)
 │   └── .gitkeep
 │
 ├── scripts/
-│   ├── create-company.sh    # Provision DB + env + start containers
+│   ├── create-company.sh    # Provision DBs + env + start containers (incl. Evolution API)
 │   └── backup-postgres.sh   # Dump company databases to backups/
 │
 └── backups/                 # Backup output directory
@@ -124,14 +128,16 @@ scripts/create-company.sh company1 company1.chat.yourdomain.com
 
 What the script does:
 1. Creates the database `chatwoot_company1` in PostgreSQL.
-2. Copies `chatwoot-template/example.env` to `companies/company1.env` and
+2. Creates the database `evolution_company1` in PostgreSQL (for Evolution API).
+3. Copies `chatwoot-template/example.env` to `companies/company1.env` and
    substitutes all values (credentials from `infra/.env`, freshly generated
-   crypto secrets).
-3. Runs `rails db:chatwoot_prepare` (schema migration) as a one-off container
+   crypto secrets, and Evolution API key).
+4. Runs `rails db:chatwoot_prepare` (schema migration) as a one-off container
    **before** starting persistent processes — prevents the
    `FATAL: database does not exist` flood that occurs when the app starts
    before its schema is provisioned.
-4. Starts `chatwoot_company1_web` and `chatwoot_company1_worker`.
+5. Starts `chatwoot_company1_web`, `chatwoot_company1_worker`, and
+   `chatwoot_company1_evolution`.
 
 After the script completes, open `https://company1.chat.yourdomain.com` in your
 browser. The TLS certificate is issued automatically via Let's Encrypt (may take
@@ -144,9 +150,9 @@ up to 60 seconds on first request).
 
 ### 5. Create additional companies
 
-Repeat step 4 for each company. Each one gets its own database, its own
-isolated containers, and its own TLS certificate — all served from the same
-server and reverse proxy.
+Repeat step 4 for each company. Each one gets its own databases, its own
+isolated containers (Chatwoot + Evolution API), and its own TLS certificate —
+all served from the same server and reverse proxy.
 
 ```bash
 scripts/create-company.sh company2 company2.chat.yourdomain.com
@@ -160,11 +166,14 @@ scripts/create-company.sh company3 company3.chat.yourdomain.com
 If you prefer to set up a company manually instead of using
 `scripts/create-company.sh`:
 
-**1. Create the Postgres database:**
+**1. Create the Postgres databases:**
 
 ```bash
 docker exec chatwoot_postgres psql -U chatwoot \
   -c "CREATE DATABASE chatwoot_mycompany;"
+
+docker exec chatwoot_postgres psql -U chatwoot \
+  -c "CREATE DATABASE evolution_mycompany;"
 ```
 
 **2. Create the company env file:**
@@ -189,6 +198,9 @@ Edit `companies/mycompany.env` and set at minimum:
 | `ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT` | `openssl rand -hex 32` |
 | `ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY` | `openssl rand -hex 32` |
 | `SMTP_*` | Your SMTP relay credentials |
+| `AUTHENTICATION_API_KEY` | `openssl rand -hex 32` |
+| `DATABASE_CONNECTION_URI` | `postgresql://chatwoot:<pg-pass>@chatwoot_postgres:5432/evolution_mycompany` |
+| `CACHE_REDIS_URI` | `redis://:<redis-password>@chatwoot_redis:6379/1` |
 
 **3. Provision the database schema:**
 
@@ -243,6 +255,9 @@ COMPANY=company1 DOMAIN=company1.chat.yourdomain.com \
 
 # Follow web logs
 docker logs -f chatwoot_company1_web
+
+# Follow Evolution API logs
+docker logs -f chatwoot_company1_evolution
 
 # Rails console
 docker exec -it chatwoot_company1_web bundle exec rails console
@@ -317,6 +332,94 @@ done
 docker compose -f infra/docker-compose.yml pull
 docker compose -f infra/docker-compose.yml up -d
 ```
+
+---
+
+## Evolution API — WhatsApp Integration
+
+Each company stack includes a dedicated [Evolution API v2](https://doc.evolution-api.com/v2/en/integrations/chatwoot)
+container (`chatwoot_<company>_evolution`) that acts as a bridge between
+WhatsApp and Chatwoot.
+
+### Connectivity model
+
+```
+WhatsApp servers  ←──── outbound WebSocket (Baileys) ────→  Evolution API
+                                                               │  chatwoot-net
+Chatwoot (web)   ←──── internal HTTP (port 8080) ────────────┘
+```
+
+- **Evolution API is NOT exposed to the internet.** There are no Traefik labels,
+  no published ports, and no public DNS record needed for it.
+- **Outbound access to WhatsApp** works via the Docker default NAT gateway —
+  no extra firewall rules or configuration required.
+- **Chatwoot ↔ Evolution API** communication travels entirely over the shared
+  `chatwoot-net` Docker bridge using the internal container hostname
+  `chatwoot_<company>_evolution:8080`.
+
+### Connecting a WhatsApp number
+
+Evolution API instances (one per WhatsApp number) are managed through its REST
+API. You can call it from the Chatwoot Rails console, a one-off `curl` from the
+host, or any HTTP client that can reach the Docker network:
+
+```bash
+# From the host — enter the evolution container's shell
+docker exec -it chatwoot_company1_evolution sh
+
+# Or call the API from the Chatwoot web container (same network)
+EVOLUTION_API_KEY=$(grep '^AUTHENTICATION_API_KEY=' companies/company1.env | cut -d= -f2)
+docker exec chatwoot_company1_web \
+  curl -s -X GET http://chatwoot_company1_evolution:8080/ \
+  -H "apikey: ${EVOLUTION_API_KEY}"
+```
+
+### Connecting Evolution API to Chatwoot
+
+After creating a WhatsApp instance and scanning the QR code, link it to
+Chatwoot. The `url` must be the **internal** Chatwoot address so the call
+stays on the Docker network:
+
+```bash
+# Retrieve the Evolution API key from the company env file
+EVOLUTION_API_KEY=$(grep '^AUTHENTICATION_API_KEY=' companies/company1.env | cut -d= -f2)
+
+docker exec chatwoot_company1_web \
+  curl -s -X POST \
+  "http://chatwoot_company1_evolution:8080/chatwoot/set/support" \
+  -H "apikey: ${EVOLUTION_API_KEY}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "enabled": true,
+    "accountId": "1",
+    "token": "<chatwoot-agent-token>",
+    "url": "http://chatwoot_company1_web:3000",
+    "signMsg": true,
+    "reopenConversation": true,
+    "conversationPending": false,
+    "nameInbox": "WhatsApp",
+    "importContacts": true,
+    "importMessages": true,
+    "daysLimitImportMessages": 3,
+    "autoCreate": true
+  }'
+```
+
+> 💡 Obtain the Chatwoot `accountId` and `token` from **Settings → Integrations
+> → API** inside the Chatwoot UI.
+
+### Evolution API environment variables
+
+The following variables in `companies/<company>.env` control Evolution API
+behaviour. They are filled in automatically by `scripts/create-company.sh`:
+
+| Variable | Purpose |
+|---|---|
+| `AUTHENTICATION_API_KEY` | Master API key (keep this secret) |
+| `DATABASE_CONNECTION_URI` | PostgreSQL URI (`evolution_<company>` database) |
+| `CACHE_REDIS_URI` | Redis URI (DB index 1, separate from Chatwoot's index 0) |
+| `CACHE_REDIS_PREFIX_KEY` | Per-company key prefix (`evolution_<company>`) |
+| `DEL_INSTANCE` | `false` — keep instances after container restart |
 
 ---
 

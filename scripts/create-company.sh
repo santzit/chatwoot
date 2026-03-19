@@ -4,8 +4,9 @@
 #
 # Creates a new Chatwoot company instance:
 #   1. Creates a dedicated Postgres database (chatwoot_<company>).
-#   2. Generates companies/<company>.env from the template with fresh secrets.
-#   3. Starts the web + worker containers using the shared compose template.
+#   2. Creates a dedicated Postgres database for Evolution API (evolution_<company>).
+#   3. Generates companies/<company>.env from the template with fresh secrets.
+#   4. Starts the web + worker + evolution containers using the shared compose template.
 #
 # Usage:
 #   scripts/create-company.sh <company-name> <domain>
@@ -64,6 +65,7 @@ fi
 export COMPANY DOMAIN
 
 DB="chatwoot_${COMPANY}"
+EVOLUTION_DB="evolution_${COMPANY}"
 ENV_FILE="companies/${COMPANY}.env"
 
 # ---------------------------------------------------------------------------
@@ -89,13 +91,14 @@ REDIS_PASSWORD=$(grep -E '^REDIS_PASSWORD=' infra/.env 2>/dev/null \
 
 echo ""
 echo -e "${CYAN}Creating company: ${COMPANY}${RESET}"
-echo "  Domain:    ${DOMAIN}"
-echo "  Database:  ${DB}"
-echo "  Env file:  ${ENV_FILE}"
+echo "  Domain:       ${DOMAIN}"
+echo "  Database:     ${DB}"
+echo "  Evolution DB: ${EVOLUTION_DB}"
+echo "  Env file:     ${ENV_FILE}"
 echo ""
 
 # ---------------------------------------------------------------------------
-# 1. Create the Postgres database
+# 1. Create the Postgres databases
 # ---------------------------------------------------------------------------
 info "Creating database ${DB}…"
 if docker exec chatwoot_postgres psql -U "$POSTGRES_USERNAME" -d postgres \
@@ -103,6 +106,14 @@ if docker exec chatwoot_postgres psql -U "$POSTGRES_USERNAME" -d postgres \
   success "Database ${DB} created."
 else
   warn "Database ${DB} may already exist — continuing."
+fi
+
+info "Creating Evolution API database ${EVOLUTION_DB}…"
+if docker exec chatwoot_postgres psql -U "$POSTGRES_USERNAME" -d postgres \
+    -c "CREATE DATABASE \"${EVOLUTION_DB}\";" 2>/dev/null; then
+  success "Database ${EVOLUTION_DB} created."
+else
+  warn "Database ${EVOLUTION_DB} may already exist — continuing."
 fi
 
 # ---------------------------------------------------------------------------
@@ -114,6 +125,7 @@ SECRET_KEY=$(openssl rand -hex 64)
 ENC_DET=$(openssl rand -hex 32)
 ENC_SALT=$(openssl rand -hex 32)
 ENC_PRIM=$(openssl rand -hex 32)
+EVOLUTION_API_KEY=$(openssl rand -hex 32)
 
 cp chatwoot-template/example.env "$ENV_FILE"
 
@@ -129,11 +141,20 @@ sed -i "s|^ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY=.*|ACTIVE_RECORD_ENCRYPTIO
 sed -i "s|^ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT=.*|ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT=${ENC_SALT}|" "$ENV_FILE"
 sed -i "s|^ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY=.*|ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY=${ENC_PRIM}|" "$ENV_FILE"
 
+# Substitute Evolution API settings
+sed -i "s|^AUTHENTICATION_API_KEY=.*|AUTHENTICATION_API_KEY=${EVOLUTION_API_KEY}|" "$ENV_FILE"
+sed -i "s|^DATABASE_CONNECTION_URI=.*|DATABASE_CONNECTION_URI=postgresql://${POSTGRES_USERNAME}:${POSTGRES_PASSWORD}@chatwoot_postgres:5432/${EVOLUTION_DB}|" "$ENV_FILE"
+sed -i "s|^DATABASE_CONNECTION_CLIENT_NAME=.*|DATABASE_CONNECTION_CLIENT_NAME=${EVOLUTION_DB}|" "$ENV_FILE"
+sed -i "s|^CACHE_REDIS_URI=.*|CACHE_REDIS_URI=redis://:${REDIS_PASSWORD}@chatwoot_redis:6379/1|" "$ENV_FILE"
+sed -i "s|^CACHE_REDIS_PREFIX_KEY=.*|CACHE_REDIS_PREFIX_KEY=evolution_${COMPANY}|" "$ENV_FILE"
+
 chmod 600 "$ENV_FILE"
 success "Generated ${ENV_FILE}."
 
 echo ""
 echo -e "${YELLOW}⚠  Review ${ENV_FILE} and update SMTP settings before going live.${RESET}"
+echo -e "${YELLOW}⚠  Configure Evolution API instances via Chatwoot's API or the Evolution API HTTP endpoint (internal: http://chatwoot_${COMPANY}_evolution:8080).${RESET}"
+echo -e "${YELLOW}⚠  Your Evolution API key is stored in ${ENV_FILE} (AUTHENTICATION_API_KEY).${RESET}"
 echo ""
 
 # ---------------------------------------------------------------------------
@@ -170,5 +191,11 @@ echo "Useful commands:"
 echo "  Logs:    COMPANY=${COMPANY} DOMAIN=${DOMAIN} docker compose --project-name chatwoot_${COMPANY} -f chatwoot-template/docker-compose.yml logs -f web"
 echo "  Console: docker exec -it chatwoot_${COMPANY}_web bundle exec rails console"
 echo "  Stop:    COMPANY=${COMPANY} DOMAIN=${DOMAIN} docker compose --project-name chatwoot_${COMPANY} -f chatwoot-template/docker-compose.yml down"
+echo ""
+echo "Evolution API (internal — not reachable from the internet):"
+echo "  Container:    chatwoot_${COMPANY}_evolution"
+echo "  Internal URL: http://chatwoot_${COMPANY}_evolution:8080"
+echo "  API key:      see AUTHENTICATION_API_KEY in ${ENV_FILE}"
+echo "  Logs:         docker logs -f chatwoot_${COMPANY}_evolution"
 echo ""
 echo -e "${YELLOW}Note: TLS certificate issuance may take up to 60 seconds on first start.${RESET}"
