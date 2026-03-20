@@ -157,6 +157,7 @@ services:
       - "traefik.http.routers.chatwoot.entrypoints=websecure"
       - "traefik.http.routers.chatwoot.tls=true"
       - "traefik.http.routers.chatwoot.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.chatwoot.service=chatwoot"
       - "traefik.http.services.chatwoot.loadbalancer.server.port=3000"
       # Sticky sessions — required for Chatwoot WebSockets (ActionCable).
       - "traefik.http.services.chatwoot.loadbalancer.sticky.cookie=true"
@@ -224,6 +225,7 @@ services:
       - "traefik.http.routers.evolution.entrypoints=websecure"
       - "traefik.http.routers.evolution.tls=true"
       - "traefik.http.routers.evolution.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.evolution.service=evolution"
       - "traefik.http.services.evolution.loadbalancer.server.port=8080"
 
 # =============================================================================

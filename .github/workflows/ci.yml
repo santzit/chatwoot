@@ -3,19 +3,18 @@
 #
 # Spins up the single-domain Chatwoot stack and verifies it works by:
 #   1. Generating env files from examples.
-#   2. Adding app.chat.localhost (and evo.chat.localhost) to /etc/hosts so the runner resolves the domain.
-#   3. Starting PostgreSQL, Redis, and Traefik.
-#   4. Creating the evolution database.
-#   5. Starting the Chatwoot web server (runs db:chatwoot_prepare then rails s).
-#   6. Starting the Chatwoot worker (Sidekiq, after web is healthy).
-#   7. Creating account "testco" with admin user admin@testco.com via Traefik.
-#   8. Creating two agents: test1@testco.com and test2@testco.com via Traefik.
-#   9. Verifying all users exist via the Chatwoot Agents API through Traefik.
-#  10. Checking Chatwoot web and worker logs for FATAL errors.
+#   2. Starting PostgreSQL and Redis.
+#   3. Creating the evolution database.
+#   4. Starting the Chatwoot web server (with port 3000 published to the host).
+#   5. Starting the Chatwoot worker (Sidekiq, after web is healthy).
+#   6. Creating account "testco" with admin user admin@testco.com.
+#   7. Creating two agents: test1@testco.com and test2@testco.com.
+#   8. Verifying all users exist via the Chatwoot Agents API.
+#   9. Checking Chatwoot web and worker logs for FATAL errors.
 #
-# All HTTP calls go through Traefik on the test hostname (app.chat.localhost).
-# TLS is active (-k / --insecure skips cert validation since ACME cannot
-# issue a cert for localhost in CI).
+# All HTTP calls go directly to http://localhost:3000 (Traefik is not started
+# in CI — it requires a real domain and TLS certificate that cannot be issued
+# for a .localhost name in the CI environment).
 # =============================================================================
 
 name: CI
@@ -36,11 +35,10 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      # All HTTP traffic goes through Traefik on this hostname.
-      # -k / --insecure is required because ACME cannot issue a cert for a
-      # .localhost domain in CI; Traefik falls back to its built-in self-signed
-      # certificate.
-      CHATWOOT_URL: https://app.chat.localhost
+      # Chatwoot is accessed directly on the host runner (port 3000 is published
+      # by docker-compose.ci.yml). Traefik is not used in CI because Let's Encrypt
+      # cannot issue TLS certificates for .localhost names.
+      CHATWOOT_URL: http://localhost:3000
 
     steps:
       - uses: actions/checkout@v4
@@ -117,22 +115,11 @@ jobs:
           chmod 600 evolution.env
 
       # -----------------------------------------------------------------------
-      # 2. Register the test hostnames on the runner
-      #    All curl calls use CHATWOOT_URL (https://app.chat.localhost) which
-      #    Traefik listens on. Traefik routes the Host header to the chatwoot
-      #    container — no direct container IP access anywhere in this workflow.
+      # 2. Start PostgreSQL and Redis
+      # Traefik is not started in CI — it requires a real domain/TLS cert.
       # -----------------------------------------------------------------------
-      - name: Register test hostnames in /etc/hosts
-        run: |
-          echo "127.0.0.1 chat.localhost" | sudo tee -a /etc/hosts
-          echo "127.0.0.1 app.chat.localhost" | sudo tee -a /etc/hosts
-          echo "127.0.0.1 evo.chat.localhost" | sudo tee -a /etc/hosts
-
-      # -----------------------------------------------------------------------
-      # 3. Start PostgreSQL, Redis, and Traefik
-      # -----------------------------------------------------------------------
-      - name: Start PostgreSQL, Redis, and Traefik
-        run: docker compose up -d postgres redis traefik
+      - name: Start PostgreSQL and Redis
+        run: docker compose up -d postgres redis
 
       - name: Wait for PostgreSQL to be healthy
         run: |
@@ -165,7 +152,7 @@ jobs:
           echo "✔ Redis healthy"
 
       # -----------------------------------------------------------------------
-      # 4. Create the evolution database
+      # 3. Create the evolution database
       # (The chatwoot database is created automatically by POSTGRES_DB in
       #  docker-compose.yml; evolution must be created once manually.)
       # -----------------------------------------------------------------------
@@ -176,24 +163,24 @@ jobs:
           echo "✔ evolution database created"
 
       # -----------------------------------------------------------------------
-      # 5. Start Chatwoot web server and worker
+      # 4. Start Chatwoot web server and worker
+      # docker-compose.ci.yml publishes port 3000 to the host so CI can reach
+      # Chatwoot directly at http://localhost:3000 without Traefik.
       # The web container runs db:chatwoot_prepare (migrations) then starts
       # the Rails server. The worker starts only after the web server is
       # healthy (TCP probe on port 3000), ensuring migrations complete first.
       # -----------------------------------------------------------------------
       - name: Start Chatwoot web server
-        run: docker compose up -d chatwoot
+        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml up -d chatwoot
 
-      - name: Wait for Chatwoot to be ready via Traefik
+      - name: Wait for Chatwoot to be ready
         timeout-minutes: 5
         run: |
-          # Poll https://app.chat.localhost/auth/sign_in through Traefik.
-          # -k  skips TLS cert verification (self-signed fallback in CI).
-          # -L  follows the HTTP→HTTPS redirect from Traefik's web entrypoint.
+          # Poll http://localhost:3000/auth/sign_in directly (no Traefik, no TLS).
           # Exits non-zero (fails the step) if DEADLINE is reached.
           DEADLINE=$((SECONDS + 240))
           echo "Waiting for Chatwoot at ${CHATWOOT_URL} (timeout: 240s) ..."
-          until curl -sfkL "${CHATWOOT_URL}/auth/sign_in" > /dev/null 2>&1; do
+          until curl -sfL "${CHATWOOT_URL}/auth/sign_in" > /dev/null 2>&1; do
             if [ $SECONDS -ge $DEADLINE ]; then
               echo "✖ Timeout: Chatwoot did not respond within 240 seconds"
               echo "--- Chatwoot container logs ---"
@@ -206,14 +193,14 @@ jobs:
           echo "✔ Chatwoot web server is ready"
 
       - name: Start Chatwoot worker
-        run: docker compose up -d chatwoot-worker
+        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml up -d chatwoot-worker
 
       # -----------------------------------------------------------------------
-      # 6. Create account "testco" with admin user admin@testco.com
+      # 5. Create account "testco" with admin user admin@testco.com
       # -----------------------------------------------------------------------
       - name: Create testco account and admin@testco.com
         run: |
-          RESPONSE=$(curl -skL -w '\n%{http_code}' -X POST \
+          RESPONSE=$(curl -sL -w '\n%{http_code}' -X POST \
             "${CHATWOOT_URL}/auth/sign_up" \
             -H "Content-Type: application/json" \
             -d '{
@@ -244,11 +231,11 @@ jobs:
           echo "✔ Account testco created (ID: $ACCOUNT_ID), admin@testco.com is the owner"
 
       # -----------------------------------------------------------------------
-      # 7. Create test1@testco.com and test2@testco.com
+      # 6. Create test1@testco.com and test2@testco.com
       # -----------------------------------------------------------------------
       - name: Create user test1@testco.com
         run: |
-          RESPONSE=$(curl -skL -w '\n%{http_code}' -X POST \
+          RESPONSE=$(curl -sL -w '\n%{http_code}' -X POST \
             "${CHATWOOT_URL}/api/v1/accounts/${ACCOUNT_ID}/agents" \
             -H "api_access_token: ${ACCESS_TOKEN}" \
             -H "Content-Type: application/json" \
@@ -264,7 +251,7 @@ jobs:
 
       - name: Create user test2@testco.com
         run: |
-          RESPONSE=$(curl -skL -w '\n%{http_code}' -X POST \
+          RESPONSE=$(curl -sL -w '\n%{http_code}' -X POST \
             "${CHATWOOT_URL}/api/v1/accounts/${ACCOUNT_ID}/agents" \
             -H "api_access_token: ${ACCESS_TOKEN}" \
             -H "Content-Type: application/json" \
@@ -279,11 +266,11 @@ jobs:
           echo "✔ test2@testco.com created"
 
       # -----------------------------------------------------------------------
-      # 8. Verify both agents exist via the Agents API
+      # 7. Verify both agents exist via the Agents API
       # -----------------------------------------------------------------------
       - name: Verify test1@testco.com and test2@testco.com exist
         run: |
-          AGENTS=$(curl -sfkL \
+          AGENTS=$(curl -sfL \
             "${CHATWOOT_URL}/api/v1/accounts/${ACCOUNT_ID}/agents" \
             -H "api_access_token: ${ACCESS_TOKEN}")
           for EMAIL in test1@testco.com test2@testco.com; do
@@ -303,7 +290,7 @@ jobs:
           echo "✔ All required users verified"
 
       # -----------------------------------------------------------------------
-      # 9. Log sanity check — web server and worker
+      # 8. Log sanity check — web server and worker
       # -----------------------------------------------------------------------
       - name: Assert no FATAL errors in Chatwoot web log
         run: |
@@ -328,4 +315,4 @@ jobs:
       # -----------------------------------------------------------------------
       - name: Tear down
         if: always()
-        run: docker compose down -v
+        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml down -v

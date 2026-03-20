@@ -391,9 +391,25 @@ chmod 600 acme.json
 docker compose restart traefik
 ```
 
-### TLS certificate not issued
+### Traefik shows "404 page not found" on `https://app.chat.yourdomain.com`
 
-1. Confirm DNS has propagated: `dig app.chat.yourdomain.com`
+Traefik returns 404 when no router matches the incoming request. This almost always means the `chatwoot` container is not running or is still starting up. Check service status:
+
+```bash
+docker compose ps
+docker compose logs chatwoot
+```
+
+Common causes and fixes:
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `chatwoot` in "Created" or "Exited" state | A dependency (postgres/redis) was unhealthy | `docker compose up -d` — starts remaining services |
+| `chatwoot` container keeps restarting | Startup error (DB not ready) | Check `docker compose logs chatwoot` for the error |
+| Traefik running, chatwoot running, but still 404 | DNS A record for `app.chat.yourdomain.com` not pointing to this server | Verify DNS: `dig app.chat.yourdomain.com` |
+| `DOMAIN` placeholder not replaced | `.env` still has `DOMAIN=chat.yourdomain.com` | Edit `.env` with your real domain, then `docker compose up -d` |
+
+
 2. Confirm port 80 is reachable from the internet.
 3. Check Traefik logs: `docker compose logs traefik | grep -i acme`
 
