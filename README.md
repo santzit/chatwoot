@@ -243,19 +243,23 @@ On first start, `db:chatwoot_prepare` loads the full database schema. This is no
 
 ### HTTP 500 — `relation "installation_configs" does not exist`
 
-This means Rails started but database migrations did not run (the schema is empty). This can happen if postgres was not fully ready when rails started, or if there is a stale volume from a previous deployment.
+This means the database schema is empty — `db:chatwoot_prepare` ran but the tables were never created. The most common cause is a **stale postgres volume** from a previous failed deployment: the `chatwoot_production` database already existed (so `db:prepare` skipped `db:schema:load`) but the schema was never fully applied.
 
-**Option A — trigger migrations on the running container:**
+**Fix (recommended — on first deploy or when there is no data to keep):**
 ```bash
-docker exec chatwoot_rails bundle exec rails db:migrate
+docker compose down -v        # removes volumes — clears the broken DB state
+docker compose up -d          # fresh start: postgres creates DB, rails loads schema
+```
+
+Wait 3–5 minutes for migrations to complete after the first `docker compose up -d`.
+
+**Alternative — if you have real data to preserve:**
+```bash
+docker exec chatwoot_rails bundle exec rails db:schema:load   # force-loads full schema
 docker compose restart rails
 ```
 
-**Option B — full reset (data will be lost):**
-```bash
-docker compose down -v
-docker compose up -d
-```
+> `db:schema:load` drops and recreates all tables. Use only if you have a backup or no data to lose.
 
 ### `unable to parse email address` (ACME / Let's Encrypt)
 

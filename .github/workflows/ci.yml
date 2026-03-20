@@ -69,15 +69,30 @@ jobs:
 
       # -----------------------------------------------------------------------
       # 3. Wait for Chatwoot to be ready
+      #
+      # Two-phase wait:
+      #   a) HTTP: /auth/sign_in returns 200 (static HTML — does NOT prove DB)
+      #   b) DB:   rails runner "Account.count" succeeds (proves schema exists)
+      #
+      # Phase (b) is essential: /auth/sign_in returns HTTP 200 immediately after
+      # Rails boots, even before db:chatwoot_prepare finishes loading the schema.
+      # Without the DB check the rails runner step would fail with a missing-table
+      # exception.
       # -----------------------------------------------------------------------
       - name: Wait for Chatwoot
         timeout-minutes: 8
         run: |
           until curl -sf http://localhost:3000/auth/sign_in > /dev/null 2>&1; do
-            echo "Waiting for Chatwoot..."
+            echo "Waiting for Chatwoot HTTP..."
             sleep 10
           done
-          echo "✔ Chatwoot is ready"
+          echo "✔ Chatwoot HTTP is ready"
+
+          until docker exec chatwoot_rails bundle exec rails runner "Account.count" > /dev/null 2>&1; do
+            echo "Waiting for DB migrations to complete..."
+            sleep 15
+          done
+          echo "✔ Chatwoot DB is ready"
 
       # -----------------------------------------------------------------------
       # 4. Create account, admin user, and two agents; then verify
@@ -89,6 +104,8 @@ jobs:
       # -----------------------------------------------------------------------
       - name: Create account and verify agents
         run: |
+          # No 2>/dev/null — Rails errors are visible in the CI log.
+          # grep '^{' extracts only the JSON line; warnings go to stderr (not captured).
           RESULT=$(docker exec chatwoot_rails bundle exec rails runner "
             Rails.logger = Logger.new('/dev/null')
             account = Account.create!(name: 'testco')
@@ -99,7 +116,7 @@ jobs:
             AccountUser.create!(account_id: account.id, user_id: user.id, role: :administrator)
             token = UserAccessToken.create!(user_id: user.id)
             \$stdout.puts({token: token.token, account_id: account.id}.to_json)
-          " 2>/dev/null | grep '^{' | tail -1)
+          " | grep '^{' | tail -1)
           echo "Rails result: $RESULT"
           TOKEN=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin)['token'])")
           ACCOUNT=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin)['account_id'])")
