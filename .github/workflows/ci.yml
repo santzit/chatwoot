@@ -1,16 +1,13 @@
 # =============================================================================
 # .github/workflows/ci.yml  –  Chatwoot stack CI (v0.2x)
 #
-# Spins up the Chatwoot stack and verifies it works by:
-#   1. Generating env files.
-#   2. Starting the stack (postgres, redis, rails, sidekiq).
-#   3. Waiting for the Rails server to be ready.
-#   4. Creating account "testco" with admin user admin@testco.com.
-#   5. Creating two agents: test1@testco.com and test2@testco.com.
-#   6. Verifying all users exist via the Chatwoot Agents API.
+# Starts postgres + redis + rails, waits for the Rails API, then:
+#   - Creates account "testco" with admin@testco.com
+#   - Creates agents test1@testco.com and test2@testco.com
+#   - Verifies both agents exist
 #
-# All HTTP calls go directly to http://localhost:3000.
-# Traefik is not started in CI — it requires a real domain and TLS cert.
+# Sidekiq is NOT started in CI — background jobs are not needed for this test.
+# All HTTP calls hit http://localhost:3000 directly (no Traefik, no TLS).
 # =============================================================================
 
 name: CI
@@ -38,7 +35,6 @@ jobs:
       # -----------------------------------------------------------------------
       - name: Generate env files
         run: |
-          # Infrastructure env (.env)
           printf '%s\n' \
             'DOMAIN=localhost' \
             'ACME_EMAIL=ci@example.org' \
@@ -48,7 +44,6 @@ jobs:
             > .env
           install -m 600 /dev/null acme.json
 
-          # Chatwoot application env (chatwoot.env)
           printf '%s\n' \
             "SECRET_KEY_BASE=$(openssl rand -hex 64)" \
             "ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY=$(openssl rand -hex 32)" \
@@ -56,25 +51,21 @@ jobs:
             "ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY=$(openssl rand -hex 32)" \
             'POSTGRES_HOST=postgres' \
             'POSTGRES_PORT=5432' \
-            'POSTGRES_DATABASE=chatwoot' \
+            'POSTGRES_DB=chatwoot' \
             'POSTGRES_USERNAME=chatwoot' \
             'POSTGRES_PASSWORD=testpass' \
             'REDIS_URL=redis://:testredis@redis:6379/0' \
             'SMTP_ADDRESS=localhost' \
             'SMTP_PORT=1025' \
-            'SMTP_DOMAIN=localhost' \
-            'SMTP_AUTHENTICATION=plain' \
-            'SMTP_ENABLE_STARTTLS_AUTO=false' \
             'MAILER_SENDER_EMAIL=ci@localhost' \
             > chatwoot.env
           chmod 600 chatwoot.env
 
       # -----------------------------------------------------------------------
-      # 2. Start the stack (rails depends_on postgres+redis, sidekiq on rails)
-      # docker-compose.ci.yml publishes port 3000 and overrides FRONTEND_URL.
+      # 2. Start postgres + redis + rails  (sidekiq not needed for this test)
       # -----------------------------------------------------------------------
       - name: Start stack
-        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml up -d rails sidekiq
+        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml up -d rails
 
       # -----------------------------------------------------------------------
       # 3. Wait for Chatwoot to be ready
@@ -89,46 +80,36 @@ jobs:
           echo "✔ Chatwoot is ready"
 
       # -----------------------------------------------------------------------
-      # 4. Create account "testco" with admin@testco.com
+      # 4. Create account, admin user, and two agents; then verify
       # -----------------------------------------------------------------------
-      - name: Create account and admin user
+      - name: Create account and verify agents
         run: |
-          RESPONSE=$(curl -sf -X POST http://localhost:3000/auth/sign_up \
+          RESP=$(curl -sf -X POST http://localhost:3000/auth/sign_up \
             -H "Content-Type: application/json" \
-            -d '{"account_name":"testco","user_full_name":"Test Admin","email":"admin@testco.com","password":"TestPass123!"}')
-          ACCESS_TOKEN=$(echo "$RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['access_token'])")
-          ACCOUNT_ID=$(echo "$RESPONSE"   | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['account_id'])")
-          echo "::add-mask::$ACCESS_TOKEN"
-          echo "ACCESS_TOKEN=$ACCESS_TOKEN" >> "$GITHUB_ENV"
-          echo "ACCOUNT_ID=$ACCOUNT_ID"     >> "$GITHUB_ENV"
-          echo "✔ Account testco created (ID: $ACCOUNT_ID)"
+            -d '{"account_name":"testco","user_full_name":"Admin","email":"admin@testco.com","password":"TestPass123!"}')
+          TOKEN=$(echo "$RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['access_token'])")
+          ACCOUNT=$(echo "$RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['account_id'])")
+          echo "::add-mask::$TOKEN"
+          echo "✔ Account testco created"
 
-      # -----------------------------------------------------------------------
-      # 5. Create test1@testco.com and test2@testco.com
-      # -----------------------------------------------------------------------
-      - name: Create test agents
-        run: |
           for EMAIL in test1@testco.com test2@testco.com; do
             NAME=$(echo "$EMAIL" | cut -d@ -f1)
-            curl -sf -X POST "http://localhost:3000/api/v1/accounts/${ACCOUNT_ID}/agents" \
-              -H "api_access_token: ${ACCESS_TOKEN}" \
+            curl -sf -X POST "http://localhost:3000/api/v1/accounts/${ACCOUNT}/agents" \
+              -H "api_access_token: ${TOKEN}" \
               -H "Content-Type: application/json" \
               -d "{\"name\":\"${NAME}\",\"email\":\"${EMAIL}\",\"role\":\"agent\"}" > /dev/null
             echo "✔ ${EMAIL} created"
           done
 
-      # -----------------------------------------------------------------------
-      # 6. Verify all users exist
-      # -----------------------------------------------------------------------
-      - name: Verify agents
-        run: |
-          AGENTS=$(curl -sf "http://localhost:3000/api/v1/accounts/${ACCOUNT_ID}/agents" \
-            -H "api_access_token: ${ACCESS_TOKEN}")
-          for EMAIL in test1@testco.com test2@testco.com; do
-            echo "$AGENTS" | python3 -c \
-              "import sys,json; d=json.load(sys.stdin); assert any(a['email']=='${EMAIL}' for a in d), '${EMAIL} not found'"
-            echo "✔ ${EMAIL} verified"
-          done
+          AGENTS=$(curl -sf "http://localhost:3000/api/v1/accounts/${ACCOUNT}/agents" \
+            -H "api_access_token: ${TOKEN}")
+          echo "$AGENTS" | python3 -c "
+          import sys, json
+          agents = json.load(sys.stdin)
+          for e in ['test1@testco.com', 'test2@testco.com']:
+              assert any(a['email'] == e for a in agents), f'{e} not found'
+              print(f'✔ {e} verified')
+          "
 
       # -----------------------------------------------------------------------
       # Tear down
@@ -136,3 +117,4 @@ jobs:
       - name: Tear down
         if: always()
         run: docker compose -f docker-compose.yml -f docker-compose.ci.yml down -v
+

@@ -334,7 +334,7 @@ docker compose restart rails sidekiq
 | `ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT` | ✅ | Encryption salt (`openssl rand -hex 32`) |
 | `ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY` | ✅ | Encryption primary key (`openssl rand -hex 32`) |
 | `POSTGRES_HOST` | ✅ | Must be `postgres` (Docker Compose service name) |
-| `POSTGRES_DATABASE` | ✅ | Must be `chatwoot` |
+| `POSTGRES_DB` | ✅ | Must be `chatwoot` |
 | `POSTGRES_USERNAME` | ✅ | Same as `POSTGRES_USER` in `.env` |
 | `POSTGRES_PASSWORD` | ✅ | Same as `POSTGRES_PASSWORD` in `.env` |
 | `REDIS_URL` | ✅ | `redis://:<password>@redis:6379/0` |
