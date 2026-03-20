@@ -96,8 +96,13 @@ services:
   # ---------------------------------------------------------------------------
   # Rails  –  Chatwoot web server
   #
-  # The official entrypoint (docker/entrypoints/rails.sh) automatically runs
-  # db:chatwoot_prepare (migrations) before starting the Rails server.
+  # entrypoint is set to ["sh", "-c"] (exec list form) so that migrations
+  # always run unconditionally, regardless of how the Docker Compose version
+  # on the host interprets a bare-string entrypoint value.  The command
+  # replicates exactly what docker/entrypoints/rails.sh does:
+  #   1. Remove stale server.pid
+  #   2. Run db:chatwoot_prepare (schema load + migrations + seed)
+  #   3. Start the Rails server
   # ---------------------------------------------------------------------------
   rails:
     <<: *base
@@ -113,8 +118,9 @@ services:
       - RAILS_ENV=production
       - INSTALLATION_ENV=docker
       - FRONTEND_URL=https://app.${DOMAIN}
-    entrypoint: docker/entrypoints/rails.sh
-    command: ["bundle", "exec", "rails", "s", "-p", "3000", "-b", "0.0.0.0"]
+    entrypoint: ["sh", "-c"]
+    command:
+      - "rm -f /app/tmp/pids/server.pid && bundle exec rails db:chatwoot_prepare && exec bundle exec rails s -p 3000 -b 0.0.0.0"
     labels:
       - "traefik.enable=true"
       # HTTP → HTTPS redirect
@@ -133,6 +139,10 @@ services:
 
   # ---------------------------------------------------------------------------
   # Sidekiq  –  Chatwoot background job processor
+  #
+  # Also runs db:chatwoot_prepare so that on a fresh deploy sidekiq does not
+  # process jobs against an empty schema.  Rails advisory locking prevents
+  # conflicts with the concurrent rails migration run.
   # ---------------------------------------------------------------------------
   sidekiq:
     <<: *base
@@ -146,7 +156,9 @@ services:
       - RAILS_ENV=production
       - INSTALLATION_ENV=docker
       - FRONTEND_URL=https://app.${DOMAIN}
-    command: ["bundle", "exec", "sidekiq", "-C", "config/sidekiq.yml"]
+    entrypoint: ["sh", "-c"]
+    command:
+      - "bundle exec rails db:chatwoot_prepare && exec bundle exec sidekiq -C config/sidekiq.yml"
 
 # =============================================================================
 # Network

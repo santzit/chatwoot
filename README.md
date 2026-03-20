@@ -135,15 +135,25 @@ install -m 600 /dev/null acme.json
 docker compose up -d
 ```
 
-On first start, the `rails` container automatically runs `db:chatwoot_prepare` (creates all tables and applies the full schema) before starting the web server. This takes 1–3 minutes. The `sidekiq` container waits until `rails` is healthy before starting.
+---
 
-Follow the startup logs:
+### 6. Run database migrations (first-time setup only)
+
+On the very first deploy, you must initialise the database schema explicitly:
+
+```bash
+docker compose run --rm rails bundle exec rails db:chatwoot_prepare
+```
+
+This creates all tables, loads the schema, and seeds initial data. It takes **2–4 minutes** on a typical VPS. On subsequent restarts the same command runs automatically as part of the container startup sequence, so no manual step is needed after the first deploy.
+
+Follow the startup logs after migrations finish:
 
 ```bash
 docker compose logs -f rails
 ```
 
-Look for a line like:
+Look for:
 ```
 * Listening on http://0.0.0.0:3000
 ```
@@ -201,7 +211,7 @@ docker compose pull
 docker compose up -d
 ```
 
-The `rails` container automatically applies pending database migrations on every restart. The `sidekiq` container waits for `rails` to become healthy — no manual migration step needed.
+`db:chatwoot_prepare` runs automatically as part of the container startup sequence and applies any pending migrations from the new image.
 
 ---
 
@@ -239,27 +249,24 @@ docker run --rm \
 
 ### Chatwoot takes a long time to start
 
-On first start, `db:chatwoot_prepare` loads the full database schema. This is normal and takes 1–3 minutes. Follow the logs with `docker compose logs -f rails`.
+After running `docker compose run --rm rails bundle exec rails db:chatwoot_prepare`, the first schema load takes 2–4 minutes. This is normal. Follow the logs with `docker compose logs -f rails` and wait for `Listening on http://0.0.0.0:3000`.
 
 ### HTTP 500 — `relation "installation_configs" does not exist`
 
-This means the database schema is empty — `db:chatwoot_prepare` ran but the tables were never created. The most common cause is a **stale postgres volume** from a previous failed deployment: the `chatwoot_production` database already existed (so `db:prepare` skipped `db:schema:load`) but the schema was never fully applied.
+The database schema is empty — `db:chatwoot_prepare` has not been run yet (or failed on a previous attempt).
 
-**Fix (recommended — on first deploy or when there is no data to keep):**
+**Run migrations manually (always safe — skips already-applied changes):**
 ```bash
-docker compose down -v        # removes volumes — clears the broken DB state
-docker compose up -d          # fresh start: postgres creates DB, rails loads schema
+docker compose run --rm rails bundle exec rails db:chatwoot_prepare
+docker compose restart rails sidekiq
 ```
 
-Wait 3–5 minutes for migrations to complete after the first `docker compose up -d`.
-
-**Alternative — if you have real data to preserve:**
+If that still fails, the postgres volume may be in a corrupted state from a previous failed deploy:
 ```bash
-docker exec chatwoot_rails bundle exec rails db:schema:load   # force-loads full schema
-docker compose restart rails
+docker compose down -v                     # removes volumes — all data will be lost
+docker compose up -d
+docker compose run --rm rails bundle exec rails db:chatwoot_prepare
 ```
-
-> `db:schema:load` drops and recreates all tables. Use only if you have a backup or no data to lose.
 
 ### `unable to parse email address` (ACME / Let's Encrypt)
 
