@@ -1,6 +1,6 @@
 # Chatwoot — Simplified Single-Domain Docker Deployment (v0.2x)
 
-Self-hosted [Chatwoot](https://www.chatwoot.com/) + [Evolution API](https://doc.evolution-api.com/v2/pt/get-started/introduction) on a **single domain**, deployed with Docker Compose behind a **Traefik** reverse proxy. Five containers, two env files, zero proprietary scripts.
+Self-hosted [Chatwoot](https://www.chatwoot.com/) + [Evolution API](https://doc.evolution-api.com/v2/pt/get-started/introduction) on a **single domain**, deployed with Docker Compose behind a **Traefik** reverse proxy. Six containers, two env files, zero proprietary scripts.
 
 ```
 Internet
@@ -8,10 +8,11 @@ Internet
     ▼
 Traefik  (ports 80 / 443, automatic TLS via Let's Encrypt)
     │
-    ├── chat.yourdomain.com      →  chatwoot   (Rails + Sidekiq, unified container)
-    └── evo.chat.yourdomain.com  →  evolution  (Evolution API v2)
+    ├── chat.yourdomain.com      →  chatwoot         (Rails web server)
+    └── evo.chat.yourdomain.com  →  chatwoot_evolution (Evolution API v2)
 
 Shared network (chatwoot-net)
+    ├── chatwoot-worker  (Sidekiq background worker)
     ├── chatwoot_postgres  (PostgreSQL 16 + pgvector)
     └── chatwoot_redis     (Redis 7)
 ```
@@ -25,7 +26,8 @@ Shared network (chatwoot-net)
 | `chatwoot_traefik` | `traefik:v3.6` | Reverse proxy, TLS termination (Let's Encrypt) |
 | `chatwoot_postgres` | `pgvector/pgvector:pg16` | Relational database (chatwoot + evolution DBs) |
 | `chatwoot_redis` | `redis:7-alpine` | Cache and Sidekiq job queues |
-| `chatwoot` | `chatwoot/chatwoot:v4.11.2` | Web server + background worker (unified) |
+| `chatwoot` | `chatwoot/chatwoot:v4.11.2` | Rails web server (runs DB migrations on start) |
+| `chatwoot-worker` | `chatwoot/chatwoot:v4.11.2` | Sidekiq background worker |
 | `chatwoot_evolution` | `evoapicloud/evolution-api:v2.3.7` | WhatsApp bridge (Evolution API v2) |
 
 **Environment files** (kept separate so each app's configuration is self-contained):
@@ -198,7 +200,7 @@ docker compose exec postgres psql -U chatwoot -c "\l"
 docker compose up -d
 ```
 
-On first start, the `chatwoot` container automatically runs `bundle exec rails db:chatwoot_prepare` before starting the web server and Sidekiq worker. This creates all tables and applies the full schema — it may take 1–3 minutes.
+On first start, the `chatwoot` container automatically runs `bundle exec rails db:chatwoot_prepare` before starting the web server. This creates all tables and applies the full schema — it may take 1–3 minutes. The `chatwoot-worker` container waits until the web server is healthy before it starts, ensuring migrations always complete first.
 
 Follow the startup logs to confirm everything is working:
 
@@ -211,7 +213,7 @@ Look for a line like:
 * Listening on http://0.0.0.0:3000
 ```
 
-Once it appears, open `https://chat.yourdomain.com` in your browser. Traefik issues the TLS certificate automatically via Let's Encrypt (may take up to 60 seconds on first request — DNS must be live).
+Once it appears, `chatwoot-worker` will start automatically. Open `https://chat.yourdomain.com` in your browser. Traefik issues the TLS certificate automatically via Let's Encrypt (may take up to 60 seconds on first request — DNS must be live).
 
 > ⚠️ DNS A records for both `chat.yourdomain.com` and `evo.chat.yourdomain.com` must resolve to your server IP before Traefik can complete the ACME challenge.
 
@@ -225,8 +227,11 @@ Once it appears, open `https://chat.yourdomain.com` in your browser. Traefik iss
 # All services
 docker compose logs -f
 
-# Chatwoot only (web + worker combined)
+# Chatwoot web server
 docker compose logs -f chatwoot
+
+# Chatwoot background worker
+docker compose logs -f chatwoot-worker
 
 # Evolution API
 docker compose logs -f evolution
@@ -262,11 +267,11 @@ docker compose ps
 Pull the latest images and restart:
 
 ```bash
-docker compose pull chatwoot evolution traefik
+docker compose pull chatwoot chatwoot-worker evolution traefik
 docker compose up -d
 ```
 
-The `chatwoot` container automatically applies pending database migrations (`db:chatwoot_prepare`) on every restart — no manual migration step is needed.
+The `chatwoot` web container automatically applies pending database migrations (`db:chatwoot_prepare`) on every restart. The `chatwoot-worker` waits for the web container to become healthy before starting, so migrations always complete before Sidekiq processes any jobs — no manual migration step is needed.
 
 To upgrade PostgreSQL or Redis, pull and restart those services individually:
 

@@ -98,13 +98,14 @@ services:
       retries: 5
 
   # ---------------------------------------------------------------------------
-  # Chatwoot  –  unified container (web server + Sidekiq worker)
+  # Chatwoot web  –  Rails application server
   #
-  # Startup sequence (handled by the inline command below):
-  #   1. db:chatwoot_prepare — creates schema on first run, applies pending
-  #      migrations on subsequent starts (idempotent, safe to run every time).
-  #   2. sidekiq             — background job processor (started in background).
-  #   3. rails s             — web server (runs in foreground as PID 1).
+  # Runs db:chatwoot_prepare on every start (idempotent: creates the schema
+  # on first run, applies pending migrations on subsequent starts), then
+  # launches the Rails web server.
+  #
+  # A TCP healthcheck on port 3000 signals readiness so that chatwoot-worker
+  # only starts after migrations are complete.
   #
   # FRONTEND_URL is derived from DOMAIN in .env so it is always consistent
   # with the Traefik routing rule.
@@ -125,14 +126,18 @@ services:
     command:
       - bash
       - -c
-      - >-
-        bundle exec rails db:chatwoot_prepare &&
-        bundle exec sidekiq -C config/sidekiq.yml &
-        bundle exec rails s -p 3000 -b 0.0.0.0
+      - "bundle exec rails db:chatwoot_prepare && bundle exec rails s -p 3000 -b 0.0.0.0"
     volumes:
       - chatwoot_storage:/app/storage
     networks:
       - chatwoot-net
+    healthcheck:
+      # Pure-bash TCP probe — no curl/wget required in the image.
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/3000'"]
+      interval: 15s
+      timeout: 5s
+      retries: 12
+      start_period: 120s
     labels:
       - "traefik.enable=true"
 
@@ -154,6 +159,29 @@ services:
       - "traefik.http.services.chatwoot.loadbalancer.sticky.cookie.name=chatwoot_sticky"
       - "traefik.http.services.chatwoot.loadbalancer.sticky.cookie.secure=true"
       - "traefik.http.services.chatwoot.loadbalancer.sticky.cookie.httpOnly=true"
+
+  # ---------------------------------------------------------------------------
+  # Chatwoot worker  –  Sidekiq background job processor
+  #
+  # Starts only after the chatwoot web container is healthy (port 3000 open),
+  # which guarantees that db:chatwoot_prepare has already completed.
+  # ---------------------------------------------------------------------------
+  chatwoot-worker:
+    image: chatwoot/chatwoot:v4.11.2
+    container_name: chatwoot-worker
+    restart: unless-stopped
+    depends_on:
+      chatwoot:
+        condition: service_healthy
+    env_file:
+      - chatwoot.env
+    environment:
+      FRONTEND_URL: "https://${DOMAIN}"
+    command: bundle exec sidekiq -C config/sidekiq.yml
+    volumes:
+      - chatwoot_storage:/app/storage
+    networks:
+      - chatwoot-net
 
   # ---------------------------------------------------------------------------
   # Evolution API  –  WhatsApp integration bridge

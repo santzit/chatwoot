@@ -141,11 +141,12 @@ jobs:
           echo "✔ evolution database created"
 
       # -----------------------------------------------------------------------
-      # 4. Start Chatwoot
-      # The container runs db:chatwoot_prepare (migrations) then starts
-      # Sidekiq and the Rails web server in a single unified container.
+      # 4. Start Chatwoot web server and worker
+      # The web container runs db:chatwoot_prepare (migrations) then starts
+      # the Rails server. The worker starts only after the web server is
+      # healthy (TCP probe on port 3000), ensuring migrations complete first.
       # -----------------------------------------------------------------------
-      - name: Start Chatwoot
+      - name: Start Chatwoot web server
         run: docker compose up -d chatwoot
 
       - name: Wait for Chatwoot to be ready
@@ -159,7 +160,10 @@ jobs:
             "until curl -sf http://${CHATWOOT_IP}:3000/auth/sign_in \
                > /dev/null 2>&1; \
              do sleep 5; done"
-          echo "✔ Chatwoot is ready"
+          echo "✔ Chatwoot web server is ready"
+
+      - name: Start Chatwoot worker
+        run: docker compose up -d chatwoot-worker
 
       # -----------------------------------------------------------------------
       # 5. Create account "testco" with admin user admin@testco.com
@@ -256,16 +260,25 @@ jobs:
           echo "✔ All required users verified"
 
       # -----------------------------------------------------------------------
-      # 8. Log sanity check
+      # 8. Log sanity check — web server and worker
       # -----------------------------------------------------------------------
-      - name: Assert no FATAL errors in Chatwoot log
+      - name: Assert no FATAL errors in Chatwoot web log
         run: |
           if docker logs chatwoot 2>&1 | grep -qE '^F,|FATAL'; then
-            echo "Found FATAL error(s) in Chatwoot logs:"
+            echo "Found FATAL error(s) in Chatwoot web logs:"
             docker logs chatwoot 2>&1 | grep -E '^F,|FATAL'
             exit 1
           fi
-          echo "✔ No FATAL errors in Chatwoot log"
+          echo "✔ No FATAL errors in Chatwoot web log"
+
+      - name: Assert no FATAL errors in Chatwoot worker log
+        run: |
+          if docker logs chatwoot-worker 2>&1 | grep -qE '^F,|FATAL'; then
+            echo "Found FATAL error(s) in Chatwoot worker logs:"
+            docker logs chatwoot-worker 2>&1 | grep -E '^F,|FATAL'
+            exit 1
+          fi
+          echo "✔ No FATAL errors in Chatwoot worker log"
 
       # -----------------------------------------------------------------------
       # Tear down
