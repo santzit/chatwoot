@@ -1,7 +1,10 @@
 # =============================================================================
-# .github/workflows/ci.yml
+# .github/workflows/ci.yml  –  Chatwoot stack CI (v0.2x)
 #
-# Single job: spin up infra, create the testco company, and verify it runs.
+# Starts postgres + redis + rails, waits for the Rails API and DB to be ready.
+# User creation is deferred to a later phase.
+#
+# All HTTP calls hit http://localhost:3000 directly (no Traefik, no TLS).
 # =============================================================================
 
 name: CI
@@ -18,184 +21,75 @@ permissions:
 jobs:
 
   test:
-    name: Spin up infra + testco company
+    name: test
     runs-on: ubuntu-latest
-
-    # COMPANY and DOMAIN are exported to every step so Docker Compose can
-    # interpolate them in chatwoot-template/docker-compose.yml.
-    env:
-      COMPANY: testco
-      DOMAIN: testco.chat.example.com
 
     steps:
       - uses: actions/checkout@v4
 
       # -----------------------------------------------------------------------
-      # 1. Configure infra
+      # 1. Generate env files
       # -----------------------------------------------------------------------
-      - name: Configure infra/.env and acme.json
+      - name: Generate env files
         run: |
           printf '%s\n' \
+            'DOMAIN=localhost' \
             'ACME_EMAIL=ci@example.org' \
-            'POSTGRES_USERNAME=chatwoot' \
+            'POSTGRES_USER=chatwoot' \
             'POSTGRES_PASSWORD=testpass' \
             'REDIS_PASSWORD=testredis' \
-            > infra/.env
-          install -m 600 /dev/null infra/acme.json
+            > .env
+          install -m 600 /dev/null acme.json
+
+          printf '%s\n' \
+            "SECRET_KEY_BASE=$(openssl rand -hex 64)" \
+            "ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY=$(openssl rand -hex 32)" \
+            "ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT=$(openssl rand -hex 32)" \
+            "ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY=$(openssl rand -hex 32)" \
+            'POSTGRES_HOST=postgres' \
+            'POSTGRES_PORT=5432' \
+            'POSTGRES_DATABASE=chatwoot_production' \
+            'POSTGRES_USERNAME=chatwoot' \
+            'POSTGRES_PASSWORD=testpass' \
+            'REDIS_URL=redis://:testredis@redis:6379/0' \
+            'SMTP_ADDRESS=localhost' \
+            'SMTP_PORT=1025' \
+            'MAILER_SENDER_EMAIL=ci@localhost' \
+            > chatwoot.env
+          chmod 600 chatwoot.env
 
       # -----------------------------------------------------------------------
-      # 2. Start shared infrastructure
-      # Traefik is skipped to avoid binding ports 80/443 on the CI runner.
-      # Starting postgres + redis still creates the chatwoot-net network
-      # (declared in infra/docker-compose.yml) so company containers can join it.
+      # 2. Start postgres + redis + rails  (sidekiq not needed for this test)
       # -----------------------------------------------------------------------
-      - name: Start PostgreSQL and Redis
-        run: docker compose -f infra/docker-compose.yml up -d postgres redis
+      - name: Start stack
+        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml up -d rails
 
-      - name: Wait for PostgreSQL to be healthy
+      # -----------------------------------------------------------------------
+      # 3. Wait for Chatwoot to be ready
+      #
+      # Two-phase wait:
+      #   a) HTTP: /auth/sign_in returns 200 (proves Rails is up)
+      #   b) DB:   rails runner "Account.count" succeeds (proves schema is ready)
+      # -----------------------------------------------------------------------
+      - name: Wait for Chatwoot
+        timeout-minutes: 8
         run: |
-          timeout 60 bash -c \
-            'until docker inspect chatwoot_postgres \
-               --format "{{.State.Health.Status}}" 2>/dev/null \
-               | grep -q "^healthy$"; \
-             do sleep 2; done'
-          echo "✔ PostgreSQL healthy"
+          until curl -sf http://localhost:3000/auth/sign_in > /dev/null 2>&1; do
+            echo "Waiting for Chatwoot HTTP..."
+            sleep 10
+          done
+          echo "✔ Chatwoot HTTP is ready"
 
-      # -----------------------------------------------------------------------
-      # 3. Create testco company via the shared script
-      # This replaces the manual env-file generation, database creation,
-      # schema provisioning, and docker compose up steps so that CI uses
-      # exactly the same code path as production.
-      # -----------------------------------------------------------------------
-      - name: Create testco company
-        timeout-minutes: 15
-        run: bash scripts/create-company.sh testco testco.chat.example.com
-
-      # Read the Evolution API key that the script generated and mask it so
-      # it never appears in plain text in the CI log.
-      - name: Export and mask Evolution API key
-        run: |
-          EVO_KEY=$(grep -E '^AUTHENTICATION_API_KEY=' companies/testco_evo.env \
-            | sed 's/^AUTHENTICATION_API_KEY=//')
-          echo "::add-mask::$EVO_KEY"
-          echo "EVO_KEY=$EVO_KEY" >> "$GITHUB_ENV"
-
-      # -----------------------------------------------------------------------
-      # 4. Verify containers are running
-      # -----------------------------------------------------------------------
-      - name: Verify testco containers are running
-        run: |
-          sleep 15
-          EXITED=$(docker ps -a \
-            --filter name=chatwoot_testco \
-            --filter status=exited \
-            --format "{{.Names}}")
-          if [ -n "$EXITED" ]; then
-            echo "❌ Container(s) exited unexpectedly: $EXITED"
-            docker logs chatwoot_testco_web 2>&1 | tail -30
-            exit 1
-          fi
-          docker ps --filter name=chatwoot_testco
-          echo "✔ testco web and worker are running"
-
-      # -----------------------------------------------------------------------
-      # 5. Assert no FATAL database errors in postgres log
-      # -----------------------------------------------------------------------
-      - name: Assert no FATAL database errors in postgres log
-        run: |
-          if docker compose -f infra/docker-compose.yml logs postgres 2>&1 \
-              | grep -qE 'FATAL.*database.*does not exist'; then
-            echo "❌ Found FATAL 'database does not exist' in postgres logs:"
-            docker compose -f infra/docker-compose.yml logs postgres \
-              | grep -E 'FATAL.*database.*does not exist'
-            exit 1
-          fi
-          echo "✔ No FATAL database errors in postgres log"
-
-      # -----------------------------------------------------------------------
-      # 6. Assert no FATAL errors in chatwoot web / worker logs
-      # -----------------------------------------------------------------------
-      - name: Assert no FATAL errors in chatwoot web log
-        run: |
-          if docker logs chatwoot_testco_web 2>&1 \
-              | grep -qE '^F,|FATAL'; then
-            echo "❌ Found FATAL error(s) in chatwoot web logs:"
-            docker logs chatwoot_testco_web 2>&1 | grep -E '^F,|FATAL'
-            exit 1
-          fi
-          echo "✔ No FATAL errors in chatwoot web log"
-
-      - name: Assert no FATAL errors in chatwoot worker log
-        run: |
-          if docker logs chatwoot_testco_worker 2>&1 \
-              | grep -qE '^F,|FATAL'; then
-            echo "❌ Found FATAL error(s) in chatwoot worker logs:"
-            docker logs chatwoot_testco_worker 2>&1 | grep -E '^F,|FATAL'
-            exit 1
-          fi
-          echo "✔ No FATAL errors in chatwoot worker log"
-
-      # -----------------------------------------------------------------------
-      # 7. Evolution API — wait, HTTP access check, POST /instance/create,
-      #    then assert no startup errors in log (log check is last so it
-      #    captures the full picture after all functional tests complete).
-      # -----------------------------------------------------------------------
-      - name: Wait for Evolution API to be ready
-        run: |
-          EVO_IP=$(docker inspect chatwoot_testco_evolution \
-            --format '{{(index .NetworkSettings.Networks "chatwoot-net").IPAddress}}')
-          echo "EVO_IP=$EVO_IP" >> "$GITHUB_ENV"
-          echo "Waiting for Evolution API at http://${EVO_IP}:8080 …"
-          timeout 60 bash -c \
-            "until curl -sf http://${EVO_IP}:8080/ > /dev/null 2>&1; do sleep 3; done"
-          echo "✔ Evolution API is ready"
-
-      - name: HTTP access check — Evolution API root
-        run: |
-          HTTP_STATUS=$(curl -s -o /dev/null -w '%{http_code}' \
-            "http://${EVO_IP}:8080/")
-          if [ "$HTTP_STATUS" != "200" ]; then
-            echo "❌ Evolution API root returned HTTP $HTTP_STATUS (expected 200)"
-            exit 1
-          fi
-          echo "✔ Evolution API returned HTTP 200"
-
-      - name: POST /instance/create — create CI test WhatsApp instance
-        run: |
-          RESPONSE=$(curl -s -w '\n%{http_code}' -X POST \
-            "http://${EVO_IP}:8080/instance/create" \
-            -H "apikey: ${{ env.EVO_KEY }}" \
-            -H "Content-Type: application/json" \
-            -d '{"instanceName":"ci-test","integration":"WHATSAPP-BAILEYS"}')
-          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
-          BODY=$(echo "$RESPONSE" | head -n -1)
-          if [ "$HTTP_CODE" != "201" ]; then
-            echo "❌ POST /instance/create returned HTTP $HTTP_CODE (expected 201)"
-            echo "Response body: $BODY"
-            exit 1
-          fi
-          echo "✔ POST /instance/create succeeded (HTTP 201)"
-          echo "Response: $BODY"
-
-      - name: Assert no startup errors in evolution log
-        run: |
-          if docker logs chatwoot_testco_evolution 2>&1 \
-              | grep -qiE '\[ERROR\]|\bERROR\b.*Exception|\bERROR\b.*ECONNREFUSED|\bERROR\b.*Cannot connect'; then
-            echo "❌ Found ERROR(s) in evolution logs:"
-            docker logs chatwoot_testco_evolution 2>&1 \
-              | grep -iE '\[ERROR\]|\bERROR\b.*Exception|\bERROR\b.*ECONNREFUSED|\bERROR\b.*Cannot connect'
-            exit 1
-          fi
-          echo "✔ No startup errors in evolution log"
+          until docker exec chatwoot_rails bundle exec rails runner "Account.count" > /dev/null 2>&1; do
+            echo "Waiting for DB migrations to complete..."
+            sleep 15
+          done
+          echo "✔ Chatwoot DB is ready"
 
       # -----------------------------------------------------------------------
       # Tear down
       # -----------------------------------------------------------------------
       - name: Tear down
         if: always()
-        run: |
-          docker compose \
-            --project-name chatwoot_testco \
-            -f chatwoot-template/docker-compose.yml \
-            down -v 2>/dev/null || true
-          docker compose -f infra/docker-compose.yml down -v
+        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml down -v
+

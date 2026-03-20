@@ -3,22 +3,12 @@
 # =============================================================================
 
 # ---------------------------------------------------------------------------
-# Infrastructure secrets (commit only the .env.example counterpart)
+# v0.2x deployment — actual secrets (commit only *.example files)
 # ---------------------------------------------------------------------------
-infra/.env
-infra/acme.json
-
-# ---------------------------------------------------------------------------
-# Company env files — actual secrets, never commit
-# (The companies/ directory itself is tracked via companies/.gitkeep)
-# ---------------------------------------------------------------------------
-companies/*.env
-
-# ---------------------------------------------------------------------------
-# Backup files
-# ---------------------------------------------------------------------------
-backups/*.sql.gz
-backups/*.sql
+.env
+chatwoot.env
+evolution.env
+acme.json
 
 # ---------------------------------------------------------------------------
 # OS / editor artifacts

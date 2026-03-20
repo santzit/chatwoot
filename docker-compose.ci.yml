@@ -1,0 +1,20 @@
+# =============================================================================
+# docker-compose.ci.yml  –  CI-only override (v0.2x)
+#
+# Publishes the Rails port 3000 to the host runner so CI tests can reach
+# the application directly at http://localhost:3000 without Traefik.
+#
+# Usage (CI only — do NOT use in production):
+#   docker compose -f docker-compose.yml -f docker-compose.ci.yml up -d rails sidekiq
+# =============================================================================
+
+services:
+  rails:
+    ports:
+      - "3000:3000"
+    environment:
+      - FRONTEND_URL=http://localhost:3000
+
+  sidekiq:
+    environment:
+      - FRONTEND_URL=http://localhost:3000
