@@ -149,8 +149,10 @@ services:
     container_name: chatwoot_sidekiq
     restart: always
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
       - NODE_ENV=production
       - RAILS_ENV=production
