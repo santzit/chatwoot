@@ -20,7 +20,7 @@
 # Shared base for rails and sidekiq — avoids repeating image/env/volumes.
 # Uses the x- prefix so Docker Compose ignores it as a standalone service.
 x-base: &base
-  image: chatwoot/chatwoot:latest
+  image: chatwoot/chatwoot:v4.11.2-ce
   env_file: chatwoot.env
   networks:
     - chatwoot-net
@@ -78,7 +78,7 @@ services:
   # Redis  –  cache and job queues (password-protected)
   # ---------------------------------------------------------------------------
   redis:
-    image: redis:alpine
+    image: redis:7-alpine
     container_name: chatwoot_redis
     restart: always
     networks:
@@ -98,7 +98,6 @@ services:
   #
   # The official entrypoint (docker/entrypoints/rails.sh) automatically runs
   # db:chatwoot_prepare (migrations) before starting the Rails server.
-  # The healthcheck signals readiness so sidekiq waits for migrations.
   # ---------------------------------------------------------------------------
   rails:
     <<: *base
@@ -114,7 +113,6 @@ services:
       - FRONTEND_URL=https://app.${DOMAIN}
     entrypoint: docker/entrypoints/rails.sh
     command: ["bundle", "exec", "rails", "s", "-p", "3000", "-b", "0.0.0.0"]
-    restart: always
     labels:
       - "traefik.enable=true"
       # HTTP → HTTPS redirect
@@ -133,16 +131,14 @@ services:
 
   # ---------------------------------------------------------------------------
   # Sidekiq  –  Chatwoot background job processor
-  #
-  # Starts only after rails is healthy (migrations complete).
   # ---------------------------------------------------------------------------
   sidekiq:
     <<: *base
     container_name: chatwoot_sidekiq
     restart: always
     depends_on:
-      rails:
-        condition: service_healthy
+      - postgres
+      - redis
     environment:
       - NODE_ENV=production
       - RAILS_ENV=production
