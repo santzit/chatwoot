@@ -51,7 +51,7 @@ jobs:
             "ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY=$(openssl rand -hex 32)" \
             'POSTGRES_HOST=postgres' \
             'POSTGRES_PORT=5432' \
-            'POSTGRES_DB=chatwoot' \
+            'POSTGRES_DATABASE=chatwoot_production' \
             'POSTGRES_USERNAME=chatwoot' \
             'POSTGRES_PASSWORD=testpass' \
             'REDIS_URL=redis://:testredis@redis:6379/0' \
