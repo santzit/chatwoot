@@ -58,6 +58,13 @@ jobs:
             > chatwoot.env
           chmod 600 chatwoot.env
 
+          printf '%s\n' \
+            "AUTHENTICATION_API_KEY=$(openssl rand -hex 32)" \
+            'CHATWOOT_ENABLED=true' \
+            'DEL_INSTANCE=false' \
+            > evolution.env
+          chmod 600 evolution.env
+
       # -----------------------------------------------------------------------
       # 2. Start postgres + redis + rails  (sidekiq not needed for this test)
       # -----------------------------------------------------------------------
