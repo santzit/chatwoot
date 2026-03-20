@@ -400,7 +400,7 @@ git pull
 docker compose up -d
 ```
 
-
+### `unable to parse email address` (ACME / Let's Encrypt)
 
 `ACME_EMAIL` in `.env` is empty or has a display-name format:
 
@@ -412,6 +412,20 @@ nano .env
 
 docker compose restart traefik
 ```
+
+### ACME email error persists after setting `ACME_EMAIL` (stale `acme.json`)
+
+If you already set `ACME_EMAIL` but still see `unable to parse email address`, Traefik is reusing a **stale ACME account** from the `acme.json` file that was created with the old invalid email. Simply restarting Traefik is not enough — you must clear the cached account:
+
+```bash
+docker compose stop traefik
+# Delete the stale ACME account (certificates will be re-issued automatically)
+echo '{}' > acme.json
+chmod 600 acme.json
+docker compose up -d traefik
+```
+
+After restarting, Traefik will register a fresh ACME account using the email in `.env`. Allow 30–60 seconds for the certificate to be issued. The 404 will resolve once the certificate is obtained and Traefik's routing is fully initialized.
 
 ### `contact email has forbidden domain "example.com"`
 
