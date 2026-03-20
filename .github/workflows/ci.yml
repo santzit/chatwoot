@@ -1,15 +1,9 @@
 # =============================================================================
 # .github/workflows/ci.yml  –  Chatwoot stack CI (v0.2x)
 #
-# Starts postgres + redis + rails, waits for the Rails API, then:
-#   - Creates a PlatformApp (to get a platform API token) and account "testco"
-#   - Creates admin@testco.com via Platform API and assigns as administrator
-#   - Creates test1@testco.com and test2@testco.com via Platform API as agents
-#   - Verifies both agents exist via account-scoped REST API
+# Starts postgres + redis + rails, waits for the Rails API and DB to be ready.
+# User creation is deferred to a later phase.
 #
-# User creation uses the Platform App API (POST /platform/api/v1/users) —
-# NOT /auth/sign_up (disabled) and NOT internal Rails models directly.
-# Sidekiq is NOT started in CI — background jobs are not needed for this test.
 # All HTTP calls hit http://localhost:3000 directly (no Traefik, no TLS).
 # =============================================================================
 
@@ -74,13 +68,8 @@ jobs:
       # 3. Wait for Chatwoot to be ready
       #
       # Two-phase wait:
-      #   a) HTTP: /auth/sign_in returns 200 (static HTML — does NOT prove DB)
-      #   b) DB:   rails runner "Account.count" succeeds (proves schema exists)
-      #
-      # Phase (b) is essential: /auth/sign_in returns HTTP 200 immediately after
-      # Rails boots, even before db:chatwoot_prepare finishes loading the schema.
-      # Without the DB check the rails runner step would fail with a missing-table
-      # exception.
+      #   a) HTTP: /auth/sign_in returns 200 (proves Rails is up)
+      #   b) DB:   rails runner "Account.count" succeeds (proves schema is ready)
       # -----------------------------------------------------------------------
       - name: Wait for Chatwoot
         timeout-minutes: 8
@@ -96,120 +85,6 @@ jobs:
             sleep 15
           done
           echo "✔ Chatwoot DB is ready"
-
-      # -----------------------------------------------------------------------
-      # 4. Bootstrap: create Platform App and account via rails runner
-      #
-      # Only the Platform App (to get a platform API token) and the account are
-      # created here. All user creation is done via the Platform API below.
-      # -----------------------------------------------------------------------
-      - name: Bootstrap platform app and account
-        run: |
-          RESULT=$(docker exec chatwoot_rails bundle exec rails runner "
-            Rails.logger = Logger.new('/dev/null')
-            platform_app = PlatformApp.create!(name: 'CI App')
-            account = Account.create!(name: 'testco')
-            \$stdout.puts({
-              platform_token: platform_app.access_token.token,
-              account_id: account.id
-            }.to_json)
-          " | grep '^{' | tail -1)
-          echo "Bootstrap result: $RESULT"
-          PLATFORM_TOKEN=$(echo "$RESULT" | python3 -c "
-          import sys, json
-          d = json.load(sys.stdin)
-          assert 'platform_token' in d, 'platform_token missing from rails runner output'
-          print(d['platform_token'])
-          ")
-          ACCOUNT_ID=$(echo "$RESULT" | python3 -c "
-          import sys, json
-          d = json.load(sys.stdin)
-          assert 'account_id' in d, 'account_id missing from rails runner output'
-          print(d['account_id'])
-          ")
-          echo "PLATFORM_TOKEN=${PLATFORM_TOKEN}" >> "$GITHUB_ENV"
-          echo "ACCOUNT_ID=${ACCOUNT_ID}" >> "$GITHUB_ENV"
-          echo "✔ Platform app and account testco created (account_id=${ACCOUNT_ID})"
-
-      # -----------------------------------------------------------------------
-      # 5. Create users and verify via Platform API
-      #
-      # Uses POST /platform/api/v1/users (NOT /auth/sign_up which is disabled).
-      # Admin is created first and assigned as administrator, then signed in to
-      # obtain an account-scoped API token for the verification step.
-      # Test users are added to the account as agents via Platform API.
-      # -----------------------------------------------------------------------
-      - name: Create account and verify agents
-        run: |
-          PLATFORM_TOKEN="${{ env.PLATFORM_TOKEN }}"
-          ACCOUNT_ID="${{ env.ACCOUNT_ID }}"
-          echo "::add-mask::$PLATFORM_TOKEN"
-
-          # Create admin user via Platform API
-          ADMIN=$(curl -sf -X POST "http://localhost:3000/platform/api/v1/users" \
-            -H "api_access_token: ${PLATFORM_TOKEN}" \
-            -H "Content-Type: application/json" \
-            -d '{"name":"Admin","email":"admin@testco.com","password":"TestPass123!"}')
-          echo "Admin create response: $ADMIN"
-          ADMIN_ID=$(echo "$ADMIN" | python3 -c "
-          import sys, json
-          d = json.load(sys.stdin)
-          assert 'id' in d, f'Expected id in response, got: {d}'
-          print(d['id'])
-          ")
-          echo "✔ admin@testco.com created (user_id=${ADMIN_ID})"
-
-          # Assign admin to account as administrator
-          curl -sf -X POST "http://localhost:3000/platform/api/v1/accounts/${ACCOUNT_ID}/account_users" \
-            -H "api_access_token: ${PLATFORM_TOKEN}" \
-            -H "Content-Type: application/json" \
-            -d "{\"user_id\":${ADMIN_ID},\"role\":\"administrator\"}" > /dev/null
-          echo "✔ admin@testco.com assigned as administrator"
-
-          # Sign in as admin to get account-scoped API token
-          SIGN_IN=$(curl -sf -X POST "http://localhost:3000/auth/sign_in" \
-            -H "Content-Type: application/json" \
-            -d '{"email":"admin@testco.com","password":"TestPass123!"}')
-          echo "Sign-in response keys: $(echo "$SIGN_IN" | python3 -c "import sys,json; print(list(json.load(sys.stdin).keys()))")"
-          TOKEN=$(echo "$SIGN_IN" | python3 -c "
-          import sys, json
-          d = json.load(sys.stdin)
-          assert 'data' in d and 'access_token' in d['data'], f'Unexpected sign-in response: {list(d.keys())}'
-          print(d['data']['access_token'])
-          ")
-          echo "::add-mask::$TOKEN"
-          echo "✔ Signed in as admin@testco.com (account_id=${ACCOUNT_ID})"
-
-          # Create test users via Platform API and add to account as agents
-          for EMAIL in test1@testco.com test2@testco.com; do
-            NAME=$(echo "$EMAIL" | cut -d@ -f1)
-            USER=$(curl -sf -X POST "http://localhost:3000/platform/api/v1/users" \
-              -H "api_access_token: ${PLATFORM_TOKEN}" \
-              -H "Content-Type: application/json" \
-              -d "{\"name\":\"${NAME}\",\"email\":\"${EMAIL}\",\"password\":\"TestPass123!\"}")
-            USER_ID=$(echo "$USER" | python3 -c "
-          import sys, json
-          d = json.load(sys.stdin)
-          assert 'id' in d, f'Expected id in response for ${EMAIL}, got: {d}'
-          print(d['id'])
-            ")
-            curl -sf -X POST "http://localhost:3000/platform/api/v1/accounts/${ACCOUNT_ID}/account_users" \
-              -H "api_access_token: ${PLATFORM_TOKEN}" \
-              -H "Content-Type: application/json" \
-              -d "{\"user_id\":${USER_ID},\"role\":\"agent\"}" > /dev/null
-            echo "✔ ${EMAIL} created and added to testco"
-          done
-
-          # Verify both agents exist via account-scoped API
-          AGENTS=$(curl -sf "http://localhost:3000/api/v1/accounts/${ACCOUNT_ID}/agents" \
-            -H "api_access_token: ${TOKEN}")
-          echo "$AGENTS" | python3 -c "
-          import sys, json
-          agents = json.load(sys.stdin)
-          for e in ['test1@testco.com', 'test2@testco.com']:
-              assert any(a['email'] == e for a in agents), f'{e} not found'
-              print(f'✔ {e} verified')
-          "
 
       # -----------------------------------------------------------------------
       # Tear down
