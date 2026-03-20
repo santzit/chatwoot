@@ -137,11 +137,13 @@ services:
     healthcheck:
       # nc (netcat) TCP probe — works in Alpine/busybox images that have no bash.
       # Exits 0 if port 3000 is accepting connections, non-zero otherwise.
+      # start_period is generous because db:chatwoot_prepare (first-run migrations)
+      # can take 3–5 minutes on a VPS before Rails starts listening on port 3000.
       test: ["CMD-SHELL", "nc -z localhost 3000 || exit 1"]
       interval: 15s
       timeout: 5s
-      retries: 12
-      start_period: 120s
+      retries: 15
+      start_period: 300s
     labels:
       - "traefik.enable=true"
 

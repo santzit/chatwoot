@@ -456,6 +456,23 @@ Common causes and fixes:
 | Traefik running, chatwoot running, but still 404 | DNS A record for `app.chat.yourdomain.com` not pointing to this server | Verify DNS: `dig app.chat.yourdomain.com` |
 | `DOMAIN` placeholder not replaced | `.env` still has `DOMAIN=chat.yourdomain.com` | Edit `.env` with your real domain, then `docker compose up -d` |
 
+### `chatwoot` container shows `(unhealthy)` after first deploy
+
+On first start, Chatwoot runs full database migrations (`db:chatwoot_prepare`) before Rails starts accepting HTTP connections. This can take **3–5 minutes** on a typical VPS. If the healthcheck exhausted its retries before migrations finished, the container is permanently marked "unhealthy" even though it is actually running.
+
+**Check whether Chatwoot is actually serving traffic:**
+```bash
+docker exec chatwoot nc -z localhost 3000 && echo "PORT OPEN"
+```
+
+If the port is open, Chatwoot is healthy — the healthcheck simply expired too early. Restart the container so the healthcheck can succeed:
+```bash
+docker compose restart chatwoot
+docker compose up -d   # starts chatwoot-worker which depends on chatwoot being healthy
+```
+
+The updated `docker-compose.yml` (current version) sets `start_period: 300s` to give migrations 5 full minutes before any failure counts — this prevents the issue on future deploys.
+
 
 ### TLS certificate not issued
 
