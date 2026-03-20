@@ -5,11 +5,12 @@
 #   https://github.com/chatwoot/chatwoot/blob/develop/docker-compose.production.yaml
 #
 # Services:
-#   • traefik   — reverse proxy, automatic TLS (Let's Encrypt)
-#   • postgres  — PostgreSQL 16 with pgvector extension
-#   • redis     — cache and job queues
-#   • rails     — Chatwoot Rails web server (runs DB migrations on start)
-#   • sidekiq   — Chatwoot Sidekiq background worker
+#   • traefik        — reverse proxy, automatic TLS (Let's Encrypt)
+#   • postgres       — PostgreSQL 16 with pgvector extension
+#   • redis          — cache and job queues
+#   • rails          — Chatwoot Rails web server (runs DB migrations on start)
+#   • sidekiq        — Chatwoot Sidekiq background worker
+#   • evolution-api  — Evolution API (WhatsApp gateway), exposed at evo.<DOMAIN>
 #
 # Prerequisites / first-time setup: see README.md
 #
@@ -162,6 +163,38 @@ services:
     command:
       - "bundle exec rails db:chatwoot_prepare && exec bundle exec sidekiq -C config/sidekiq.yml"
 
+  # ---------------------------------------------------------------------------
+  # Evolution API  –  WhatsApp gateway / messaging integration
+  #
+  # Exposes the Evolution API at https://evo.<DOMAIN> via Traefik.
+  # Instances are stored in the evolution_instances volume (no DB or Redis).
+  # Copy evolution.env.example → evolution.env and set AUTHENTICATION_API_KEY.
+  # ---------------------------------------------------------------------------
+  evolution-api:
+    image: evoapicloud/evolution-api:v2.3.6
+    container_name: evolution_api
+    restart: always
+    networks:
+      - chatwoot-net
+    env_file: evolution.env
+    environment:
+      - SERVER_URL=https://evo.${DOMAIN}
+    volumes:
+      - evolution_instances:/evolution/instances
+    labels:
+      - "traefik.enable=true"
+      # HTTP → HTTPS redirect
+      - "traefik.http.routers.evolution-http.rule=Host(`evo.${DOMAIN}`)"
+      - "traefik.http.routers.evolution-http.entrypoints=web"
+      - "traefik.http.routers.evolution-http.middlewares=redirect-https"
+      # HTTPS with Let's Encrypt TLS
+      - "traefik.http.routers.evolution.rule=Host(`evo.${DOMAIN}`)"
+      - "traefik.http.routers.evolution.entrypoints=websecure"
+      - "traefik.http.routers.evolution.tls=true"
+      - "traefik.http.routers.evolution.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.evolution.service=evolution"
+      - "traefik.http.services.evolution.loadbalancer.server.port=8080"
+
 # =============================================================================
 # Network
 # =============================================================================
@@ -177,3 +210,4 @@ volumes:
   storage_data:
   postgres_data:
   redis_data:
+  evolution_instances:
