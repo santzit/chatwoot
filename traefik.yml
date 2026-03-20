@@ -47,9 +47,8 @@ providers:
 certificatesResolvers:
   letsencrypt:
     acme:
-      # ACME_EMAIL is set in .env — do NOT edit here.
-      email: ${ACME_EMAIL}
-      # Must match the bind-mount path in docker-compose.yml.
+      # The ACME email is injected via the --certificatesResolvers.letsencrypt.acme.email
+      # CLI flag in docker-compose.yml (traefik.yml does NOT expand ${...} variables).
       storage: /acme.json
       httpChallenge:
         entryPoint: web

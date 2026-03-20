@@ -30,8 +30,12 @@ services:
     ports:
       - "80:80"
       - "443:443"
-    environment:
-      ACME_EMAIL: ${ACME_EMAIL}
+    # Docker Compose interpolates ${ACME_EMAIL} from .env here — traefik.yml
+    # does NOT support shell variable substitution, so the email must be
+    # injected via a CLI flag instead of inside traefik.yml.
+    command:
+      - "--configFile=/traefik.yml"
+      - "--certificatesResolvers.letsencrypt.acme.email=${ACME_EMAIL}"
     volumes:
       # Read-only Docker socket — lets Traefik discover labelled containers.
       - /var/run/docker.sock:/var/run/docker.sock:ro
