@@ -125,7 +125,7 @@ services:
     environment:
       FRONTEND_URL: "https://${DOMAIN}"
     command:
-      - bash
+      - /bin/bash
       - -c
       - "bundle exec rails db:chatwoot_prepare && bundle exec rails s -p 3000 -b 0.0.0.0"
     volumes:
@@ -133,10 +133,11 @@ services:
     networks:
       - chatwoot-net
     healthcheck:
-      # Pure-bash TCP probe — no curl/wget required in the image.
+      # Pure-bash TCP probe — uses absolute path /bin/bash so it works
+      # regardless of how the image sets up PATH.
       # Opens /dev/tcp/localhost/3000 for reading; exits non-zero if the
       # connection is refused (port not yet listening).
-      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/3000'"]
+      test: ["CMD-SHELL", "/bin/bash -c '</dev/tcp/localhost/3000'"]
       interval: 15s
       timeout: 5s
       retries: 12
