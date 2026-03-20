@@ -1,0 +1,212 @@
+# =============================================================================
+# docker-compose.yml  –  Simplified single-domain Chatwoot deployment (v0.2x)
+#
+# Services:
+#   • traefik    — reverse proxy, automatic TLS (Let's Encrypt)
+#   • postgres   — PostgreSQL 16 with pgvector (chatwoot DB created
+#                  automatically; evolution DB must be created first — see README)
+#   • redis      — cache and job queues (shared, password-protected)
+#   • chatwoot   — unified container: web server + Sidekiq worker in one
+#   • evolution  — Evolution API v2 (WhatsApp integration bridge)
+#
+# Prerequisites / first-time setup: see README.md
+#
+# Usage:
+#   docker compose up -d
+# =============================================================================
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # Traefik  –  reverse proxy / TLS termination
+  # ---------------------------------------------------------------------------
+  traefik:
+    image: traefik:v3.6
+    container_name: chatwoot_traefik
+    restart: unless-stopped
+    networks:
+      - chatwoot-net
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      ACME_EMAIL: ${ACME_EMAIL}
+    volumes:
+      # Read-only Docker socket — lets Traefik discover labelled containers.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # Static configuration (entrypoints, ACME resolver, Docker provider).
+      - ./traefik.yml:/traefik.yml:ro
+      # Let's Encrypt certificate storage.
+      # Must be created with chmod 600 before starting — see README.md.
+      - ./acme.json:/acme.json
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL  –  database with pgvector extension
+  #
+  # POSTGRES_DB automatically creates the chatwoot database on first start.
+  # The evolution database must be created manually once before starting the
+  # evolution service — see README.md § "First-time setup".
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: chatwoot_postgres
+    restart: unless-stopped
+    networks:
+      - chatwoot-net
+    environment:
+      POSTGRES_USER: ${POSTGRES_USERNAME}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: chatwoot
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d chatwoot"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # Redis  –  shared cache and job queues (password-protected)
+  #
+  # Chatwoot uses DB 0; Evolution API uses DB 1.
+  # maxmemory + volatile-lru evict only TTL-bearing keys so Sidekiq's
+  # persistent job-queue keys are never discarded.
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: chatwoot_redis
+    restart: unless-stopped
+    networks:
+      - chatwoot-net
+    environment:
+      # Expose REDIS_PASSWORD so the healthcheck shell can read it.
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    command: >
+      redis-server
+      --requirepass ${REDIS_PASSWORD}
+      --save 60 1
+      --loglevel warning
+      --ignore-warnings OVERCOMMIT_MEMORY
+      --maxmemory 512mb
+      --maxmemory-policy volatile-lru
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a $$REDIS_PASSWORD ping | grep PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # Chatwoot  –  unified container (web server + Sidekiq worker)
+  #
+  # Startup sequence (handled by the inline command below):
+  #   1. db:chatwoot_prepare — creates schema on first run, applies pending
+  #      migrations on subsequent starts (idempotent, safe to run every time).
+  #   2. sidekiq             — background job processor (started in background).
+  #   3. rails s             — web server (runs in foreground as PID 1).
+  #
+  # FRONTEND_URL is derived from DOMAIN in .env so it is always consistent
+  # with the Traefik routing rule.
+  # ---------------------------------------------------------------------------
+  chatwoot:
+    image: chatwoot/chatwoot:v4.11.2
+    container_name: chatwoot
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - chatwoot.env
+    environment:
+      FRONTEND_URL: "https://${DOMAIN}"
+    command:
+      - bash
+      - -c
+      - >-
+        bundle exec rails db:chatwoot_prepare &&
+        bundle exec sidekiq -C config/sidekiq.yml &
+        bundle exec rails s -p 3000 -b 0.0.0.0
+    volumes:
+      - chatwoot_storage:/app/storage
+    networks:
+      - chatwoot-net
+    labels:
+      - "traefik.enable=true"
+
+      # HTTP → HTTPS redirect
+      - "traefik.http.routers.chatwoot-http.rule=Host(`${DOMAIN}`)"
+      - "traefik.http.routers.chatwoot-http.entrypoints=web"
+      - "traefik.http.routers.chatwoot-http.middlewares=redirect-https@docker"
+      - "traefik.http.middlewares.redirect-https.redirectscheme.scheme=https"
+      - "traefik.http.middlewares.redirect-https.redirectscheme.permanent=true"
+
+      # HTTPS router with Let's Encrypt TLS
+      - "traefik.http.routers.chatwoot.rule=Host(`${DOMAIN}`)"
+      - "traefik.http.routers.chatwoot.entrypoints=websecure"
+      - "traefik.http.routers.chatwoot.tls=true"
+      - "traefik.http.routers.chatwoot.tls.certresolver=letsencrypt"
+      - "traefik.http.services.chatwoot.loadbalancer.server.port=3000"
+      # Sticky sessions — required for Chatwoot WebSockets (ActionCable).
+      - "traefik.http.services.chatwoot.loadbalancer.sticky.cookie=true"
+      - "traefik.http.services.chatwoot.loadbalancer.sticky.cookie.name=chatwoot_sticky"
+      - "traefik.http.services.chatwoot.loadbalancer.sticky.cookie.secure=true"
+      - "traefik.http.services.chatwoot.loadbalancer.sticky.cookie.httpOnly=true"
+
+  # ---------------------------------------------------------------------------
+  # Evolution API  –  WhatsApp integration bridge
+  #
+  # Exposed at evo.<DOMAIN> via Traefik.
+  # SERVER_URL is set to the public URL so Evolution API knows its own base
+  # URL when constructing webhook payloads and QR code links.
+  # ---------------------------------------------------------------------------
+  evolution:
+    image: evoapicloud/evolution-api:v2.3.7
+    container_name: chatwoot_evolution
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - evolution.env
+    environment:
+      SERVER_URL: "https://evo.${DOMAIN}"
+    volumes:
+      - evolution_instances:/evolution/instances
+    networks:
+      - chatwoot-net
+    labels:
+      - "traefik.enable=true"
+
+      # HTTP → HTTPS redirect
+      - "traefik.http.routers.evolution-http.rule=Host(`evo.${DOMAIN}`)"
+      - "traefik.http.routers.evolution-http.entrypoints=web"
+      - "traefik.http.routers.evolution-http.middlewares=redirect-https@docker"
+
+      # HTTPS router with Let's Encrypt TLS
+      - "traefik.http.routers.evolution.rule=Host(`evo.${DOMAIN}`)"
+      - "traefik.http.routers.evolution.entrypoints=websecure"
+      - "traefik.http.routers.evolution.tls=true"
+      - "traefik.http.routers.evolution.tls.certresolver=letsencrypt"
+      - "traefik.http.services.evolution.loadbalancer.server.port=8080"
+
+# =============================================================================
+# Network
+# =============================================================================
+networks:
+  chatwoot-net:
+    name: chatwoot-net
+    driver: bridge
+
+# =============================================================================
+# Volumes
+# =============================================================================
+volumes:
+  postgres_data:
+  redis_data:
+  chatwoot_storage:
+  evolution_instances:

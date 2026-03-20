@@ -3,13 +3,21 @@
 # =============================================================================
 
 # ---------------------------------------------------------------------------
-# Infrastructure secrets (commit only the .env.example counterpart)
+# v0.2x simplified deployment — actual secrets (commit only *.example files)
+# ---------------------------------------------------------------------------
+.env
+chatwoot.env
+evolution.env
+acme.json
+
+# ---------------------------------------------------------------------------
+# v0.1x legacy — infrastructure secrets
 # ---------------------------------------------------------------------------
 infra/.env
 infra/acme.json
 
 # ---------------------------------------------------------------------------
-# Company env files — actual secrets, never commit
+# v0.1x legacy — company env files
 # (The companies/ directory itself is tracked via companies/.gitkeep)
 # ---------------------------------------------------------------------------
 companies/*.env

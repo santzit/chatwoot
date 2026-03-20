@@ -1,6 +1,6 @@
-# Chatwoot — Multi-Tenant Self-Hosted Docker Compose
+# Chatwoot — Simplified Single-Domain Docker Deployment (v0.2x)
 
-Self-hosted [Chatwoot](https://www.chatwoot.com/) platform that runs **multiple isolated company instances** behind a single **Traefik** reverse proxy, sharing one PostgreSQL cluster and one Redis instance. Each company instance includes an **Evolution API** container that bridges WhatsApp (via Baileys) with Chatwoot over the internal Docker network.
+Self-hosted [Chatwoot](https://www.chatwoot.com/) + [Evolution API](https://doc.evolution-api.com/v2/pt/get-started/introduction) on a **single domain**, deployed with Docker Compose behind a **Traefik** reverse proxy. Five containers, two env files, zero proprietary scripts.
 
 ```
 Internet
@@ -8,46 +8,33 @@ Internet
     ▼
 Traefik  (ports 80 / 443, automatic TLS via Let's Encrypt)
     │
-    ├── company1.chat.yourdomain.com  →  chatwoot_company1_web
-    └── company2.chat.yourdomain.com  →  chatwoot_company2_web
+    ├── chat.yourdomain.com      →  chatwoot   (Rails + Sidekiq, unified container)
+    └── evo.chat.yourdomain.com  →  evolution  (Evolution API v2)
 
-Internal Docker network (chatwoot-net)  ←→  WhatsApp servers (outbound)
-    ├── chatwoot_company1_evolution  (internal only — not exposed to internet)
-    └── chatwoot_company2_evolution  (internal only — not exposed to internet)
-
-Shared infrastructure  (infra/)
-    ├── PostgreSQL 16  (chatwoot_<company> + evolution_<company> databases)
-    └── Redis 7        (DB 0 for Chatwoot, DB 1 for Evolution API)
+Shared network (chatwoot-net)
+    ├── chatwoot_postgres  (PostgreSQL 16 + pgvector)
+    └── chatwoot_redis     (Redis 7)
 ```
 
 ---
 
-## Directory structure
+## Stack
 
-```
-chatwoot-platform/
-│
-├── infra/
-│   ├── docker-compose.yml   # Traefik + PostgreSQL + Redis (all-in-one)
-│   ├── traefik.yml          # Traefik static config
-│   ├── .env.example         # → copy to .env, fill in all four values
-│   └── acme.json            # Let's Encrypt cert store (create manually, chmod 600)
-│
-├── chatwoot-template/
-│   ├── docker-compose.yml   # Shared template — same for every company
-│   │                        # (web + worker + evolution services)
-│   └── example.env          # Company env template
-│
-├── companies/               # Per-company .env files (all gitignored)
-│   └── .gitkeep
-│
-├── scripts/
-│   ├── create-company.sh    # Provision DBs + env + start containers (incl. Evolution API)
-│   └── backup-postgres.sh   # Dump company databases to backups/
-│
-└── backups/                 # Backup output directory
-    └── .gitkeep
-```
+| Container | Image | Purpose |
+|---|---|---|
+| `chatwoot_traefik` | `traefik:v3.6` | Reverse proxy, TLS termination (Let's Encrypt) |
+| `chatwoot_postgres` | `pgvector/pgvector:pg16` | Relational database (chatwoot + evolution DBs) |
+| `chatwoot_redis` | `redis:7-alpine` | Cache and Sidekiq job queues |
+| `chatwoot` | `chatwoot/chatwoot:v4.11.2` | Web server + background worker (unified) |
+| `chatwoot_evolution` | `evoapicloud/evolution-api:v2.3.7` | WhatsApp bridge (Evolution API v2) |
+
+**Environment files** (kept separate so each app's configuration is self-contained):
+
+| File | Purpose |
+|---|---|
+| `.env` | Shared infra: domain, ACME e-mail, Postgres and Redis credentials |
+| `chatwoot.env` | Chatwoot application vars (secrets, DB, Redis, SMTP) |
+| `evolution.env` | Evolution API vars (API key, DB, Redis, integration flags) |
 
 ---
 
@@ -55,14 +42,15 @@ chatwoot-platform/
 
 | Requirement | Notes |
 |---|---|
-| Ubuntu 22.04 or 24.04 LTS | Other Linux distros work too |
-| Docker ≥ 24 + Docker Compose v2 | Install: `curl -fsSL https://get.docker.com \| sh` |
-| DNS A record for each company | e.g. `company1.chat.yourdomain.com → <server-ip>` |
-| Ports 80 and 443 open | Required by Traefik and the Let's Encrypt HTTP-01 challenge |
+| Ubuntu 22.04 or 24.04 LTS | Other Linux distros work |
+| Docker ≥ 24 + Docker Compose v2 | `curl -fsSL https://get.docker.com \| sh` |
+| A DNS A record for your domain | e.g. `chat.yourdomain.com → <server-ip>` |
+| A DNS A record for the evo subdomain | e.g. `evo.chat.yourdomain.com → <server-ip>` |
+| Ports 80 and 443 open | Required by Traefik and the ACME HTTP-01 challenge |
 
 ---
 
-## Tutorial — First-time setup
+## First-time setup
 
 ### 1. Clone the repository
 
@@ -73,327 +61,282 @@ cd /opt/chatwoot
 
 ---
 
-### 2. Configure the infrastructure
-
-Copy the example env and fill in all four values:
+### 2. Configure .env (shared infrastructure)
 
 ```bash
-cp infra/.env.example infra/.env
+cp .env.example .env
 ```
 
-Edit `infra/.env`:
+Edit `.env` and fill in every value:
 
 ```env
-ACME_EMAIL=you@yourdomain.com             # ← your real e-mail (for Let's Encrypt)
+DOMAIN=chat.yourdomain.com              # ← your real domain (no protocol prefix)
+ACME_EMAIL=you@yourdomain.com           # ← plain e-mail for Let's Encrypt
 POSTGRES_USERNAME=chatwoot
-POSTGRES_PASSWORD=<strong-password>       # generate: openssl rand -hex 32
-REDIS_PASSWORD=<strong-password>          # generate: openssl rand -hex 32
+POSTGRES_PASSWORD=<strong-password>     # openssl rand -hex 32
+REDIS_PASSWORD=<strong-password>        # openssl rand -hex 32
 ```
 
-> ⚠️ **Do not use an `@example.com` address for `ACME_EMAIL`.** Let's Encrypt will reject the
-> account registration with `contact email has forbidden domain "example.com"`.
+> ⚠️ `ACME_EMAIL` must be a plain address — no display name, no angle brackets.
+> Using `@example.com` is rejected by Let's Encrypt with "forbidden domain".
 
-Create the certificate storage file with strict permissions (required by Traefik):
+---
+
+### 3. Configure chatwoot.env (Chatwoot application)
 
 ```bash
-install -m 600 /dev/null infra/acme.json
+cp chatwoot.env.example chatwoot.env
+chmod 600 chatwoot.env
+```
+
+Edit `chatwoot.env` and fill in every value. Generate the required secrets:
+
+```bash
+openssl rand -hex 64   # → SECRET_KEY_BASE
+openssl rand -hex 32   # → ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY
+openssl rand -hex 32   # → ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT
+openssl rand -hex 32   # → ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY
+```
+
+Set the database and Redis credentials to match `.env`:
+
+```env
+POSTGRES_USERNAME=chatwoot              # same as .env
+POSTGRES_PASSWORD=<same-as-env>         # same as .env
+REDIS_URL=redis://:<same-as-env-redis-password>@chatwoot_redis:6379/0
+```
+
+Fill in the SMTP block so Chatwoot can send invitation and notification e-mails:
+
+```env
+SMTP_ADDRESS=smtp.example.com
+SMTP_PORT=587
+SMTP_DOMAIN=yourdomain.com
+SMTP_USERNAME=user@example.com
+SMTP_PASSWORD=<smtp-password>
+SMTP_AUTHENTICATION=plain
+SMTP_ENABLE_STARTTLS_AUTO=true
+MAILER_SENDER_EMAIL=support@yourdomain.com
+```
+
+> 💡 Free SMTP relays: [Resend](https://resend.com), [SendGrid](https://sendgrid.com), [Mailgun](https://mailgun.com).
+
+> ℹ️ `FRONTEND_URL` is set automatically by `docker-compose.yml` from `DOMAIN` — do not add it to `chatwoot.env`.
+
+---
+
+### 4. Configure evolution.env (Evolution API)
+
+```bash
+cp evolution.env.example evolution.env
+chmod 600 evolution.env
+```
+
+Edit `evolution.env`:
+
+```bash
+openssl rand -hex 32   # → AUTHENTICATION_API_KEY
+```
+
+Set the database URI using the same credentials as `.env` and the `evolution` database name:
+
+```env
+AUTHENTICATION_API_KEY=<generated-key>
+DATABASE_CONNECTION_URI=postgresql://chatwoot:<postgres-password>@chatwoot_postgres:5432/evolution
+CACHE_REDIS_URI=redis://:<redis-password>@chatwoot_redis:6379/1
+```
+
+> ℹ️ `SERVER_URL` is set automatically by `docker-compose.yml` from `DOMAIN` — do not add it to `evolution.env`.
+
+---
+
+### 5. Create acme.json (TLS certificate storage)
+
+Traefik requires this file to exist with strict permissions before it starts:
+
+```bash
+install -m 600 /dev/null acme.json
 ```
 
 ---
 
-### 3. Start the infrastructure
+### 6. Start PostgreSQL and Redis
 
 ```bash
-docker compose -f infra/docker-compose.yml up -d
+docker compose up -d postgres redis
 ```
 
-This starts Traefik, PostgreSQL, and Redis in one step. Verify everything is healthy:
+Wait until both are healthy:
 
 ```bash
-docker compose -f infra/docker-compose.yml ps
+docker compose ps
 ```
 
-Expected: all three containers show `Up` or `Up (healthy)`.
+Expected: both show `healthy`.
 
 ---
 
-### 4. Create your first company
+### 7. Create the evolution database
 
-Use the provided script — it handles database creation, secret generation, and
-container startup automatically:
+The `chatwoot` database is created **automatically** by Docker (via `POSTGRES_DB: chatwoot` in `docker-compose.yml`). The `evolution` database must be created once manually:
 
 ```bash
-scripts/create-company.sh company1 company1.chat.yourdomain.com
+docker compose exec postgres psql -U chatwoot -c "CREATE DATABASE evolution;"
 ```
 
-What the script does:
-1. Creates the database `chatwoot_company1` in PostgreSQL.
-2. Creates the database `evolution_company1` in PostgreSQL (for Evolution API).
-3. Copies `chatwoot-template/example.env` to `companies/company1.env` and
-   substitutes all values (credentials from `infra/.env`, freshly generated
-   crypto secrets, and Evolution API key).
-4. Runs `rails db:chatwoot_prepare` (schema migration) as a one-off container
-   **before** starting persistent processes — prevents the
-   `FATAL: database does not exist` flood that occurs when the app starts
-   before its schema is provisioned.
-5. Starts `chatwoot_company1_web`, `chatwoot_company1_worker`, and
-   `chatwoot_company1_evolution`.
-
-After the script completes, open `https://company1.chat.yourdomain.com` in your
-browser. The TLS certificate is issued automatically via Let's Encrypt (may take
-up to 60 seconds on first request).
-
-> ⚠️ **DNS must resolve** before Traefik can complete the ACME HTTP-01 challenge
-> and issue the certificate. Make sure the DNS A record is live.
-
----
-
-### 5. Create additional companies
-
-Repeat step 4 for each company. Each one gets its own databases, its own
-isolated containers (Chatwoot + Evolution API), and its own TLS certificate —
-all served from the same server and reverse proxy.
+You can verify both databases exist:
 
 ```bash
-scripts/create-company.sh company2 company2.chat.yourdomain.com
-scripts/create-company.sh company3 company3.chat.yourdomain.com
+docker compose exec postgres psql -U chatwoot -c "\l"
 ```
 
 ---
 
-## Manual company setup (without the script)
-
-If you prefer to set up a company manually instead of using
-`scripts/create-company.sh`:
-
-**1. Create the Postgres databases:**
+### 8. Start all services
 
 ```bash
-docker exec chatwoot_postgres psql -U chatwoot \
-  -c "CREATE DATABASE chatwoot_mycompany;"
-
-docker exec chatwoot_postgres psql -U chatwoot \
-  -c "CREATE DATABASE evolution_mycompany;"
+docker compose up -d
 ```
 
-**2. Create the company env file:**
+On first start, the `chatwoot` container automatically runs `bundle exec rails db:chatwoot_prepare` before starting the web server and Sidekiq worker. This creates all tables and applies the full schema — it may take 1–3 minutes.
+
+Follow the startup logs to confirm everything is working:
 
 ```bash
-cp chatwoot-template/example.env companies/mycompany.env
-chmod 600 companies/mycompany.env
+docker compose logs -f chatwoot
 ```
 
-Edit `companies/mycompany.env` and set at minimum:
-
-| Variable | Value |
-|---|---|
-| `COMPANY_NAME` | `mycompany` |
-| `DOMAIN` | `mycompany.chat.yourdomain.com` |
-| `POSTGRES_DATABASE` | `chatwoot_mycompany` |
-| `POSTGRES_USERNAME` | Must match `POSTGRES_USERNAME` in `infra/.env` |
-| `POSTGRES_PASSWORD` | Must match `POSTGRES_PASSWORD` in `infra/.env` |
-| `REDIS_URL` | `redis://:<redis-password>@chatwoot_redis:6379/0` |
-| `SECRET_KEY_BASE` | `openssl rand -hex 64` |
-| `ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY` | `openssl rand -hex 32` |
-| `ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT` | `openssl rand -hex 32` |
-| `ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY` | `openssl rand -hex 32` |
-| `SMTP_*` | Your SMTP relay credentials |
-| `AUTHENTICATION_API_KEY` | `openssl rand -hex 32` |
-| `DATABASE_CONNECTION_URI` | `postgresql://chatwoot:<pg-pass>@chatwoot_postgres:5432/evolution_mycompany` |
-| `CACHE_REDIS_URI` | `redis://:<redis-password>@chatwoot_redis:6379/1` |
-
-**3. Provision the database schema:**
-
-Run `rails db:chatwoot_prepare` as a one-off container **before** starting the
-persistent containers. This prevents the `FATAL: database does not exist` log
-flood that occurs when the app starts without a provisioned schema.
-
-```bash
-COMPANY=mycompany DOMAIN=mycompany.chat.yourdomain.com \
-  docker compose \
-    --project-name chatwoot_mycompany \
-    -f chatwoot-template/docker-compose.yml \
-    run --rm web bundle exec rails db:chatwoot_prepare
+Look for a line like:
+```
+* Listening on http://0.0.0.0:3000
 ```
 
-**4. Start the company stack:**
+Once it appears, open `https://chat.yourdomain.com` in your browser. Traefik issues the TLS certificate automatically via Let's Encrypt (may take up to 60 seconds on first request — DNS must be live).
 
-```bash
-COMPANY=mycompany DOMAIN=mycompany.chat.yourdomain.com \
-  docker compose \
-    --project-name chatwoot_mycompany \
-    -f chatwoot-template/docker-compose.yml \
-    up -d
-```
+> ⚠️ DNS A records for both `chat.yourdomain.com` and `evo.chat.yourdomain.com` must resolve to your server IP before Traefik can complete the ACME challenge.
 
 ---
 
-## Useful commands
+## Management
 
-### Infrastructure
+### View logs
 
 ```bash
-# Status
-docker compose -f infra/docker-compose.yml ps
+# All services
+docker compose logs -f
 
-# Logs
-docker compose -f infra/docker-compose.yml logs -f
-docker compose -f infra/docker-compose.yml logs -f traefik
-docker compose -f infra/docker-compose.yml logs -f postgres
+# Chatwoot only (web + worker combined)
+docker compose logs -f chatwoot
 
-# Connect to Postgres
-docker exec -it chatwoot_postgres psql -U chatwoot
+# Evolution API
+docker compose logs -f evolution
+
+# Postgres / Redis
+docker compose logs -f postgres
+docker compose logs -f redis
 ```
 
-### Company instances
+### Rails console (advanced operations)
 
 ```bash
-# Status
-COMPANY=company1 DOMAIN=company1.chat.yourdomain.com \
-  docker compose --project-name chatwoot_company1 \
-  -f chatwoot-template/docker-compose.yml ps
-
-# Follow web logs
-docker logs -f chatwoot_company1_web
-
-# Follow Evolution API logs
-docker logs -f chatwoot_company1_evolution
-
-# Rails console
-docker exec -it chatwoot_company1_web bundle exec rails console
-
-# Restart
-COMPANY=company1 DOMAIN=company1.chat.yourdomain.com \
-  docker compose --project-name chatwoot_company1 \
-  -f chatwoot-template/docker-compose.yml restart
+docker exec -it chatwoot bundle exec rails console
 ```
 
-### Stop / remove a company
+### Restart a service
 
 ```bash
-COMPANY=company1 DOMAIN=company1.chat.yourdomain.com \
-  docker compose --project-name chatwoot_company1 \
-  -f chatwoot-template/docker-compose.yml down
-
-# Remove the env file too (optional)
-rm companies/company1.env
+docker compose restart chatwoot
+docker compose restart evolution
 ```
 
----
-
-## Backup
-
-Back up all company databases to `backups/`:
+### Service status
 
 ```bash
-scripts/backup-postgres.sh
-```
-
-Back up a single company:
-
-```bash
-scripts/backup-postgres.sh company1
-# creates: backups/chatwoot_company1_<timestamp>.sql.gz
-```
-
-Restore a backup:
-
-```bash
-gunzip -c backups/chatwoot_company1_20260101_120000.sql.gz \
-  | docker exec -i chatwoot_postgres psql -U chatwoot -d chatwoot_company1
+docker compose ps
 ```
 
 ---
 
 ## Upgrading
 
-### Upgrade all company containers
+Pull the latest images and restart:
 
 ```bash
-for env_file in companies/*.env; do
-  company=$(basename "$env_file" .env)
-  domain=$(grep '^DOMAIN=' "$env_file" | cut -d= -f2)
-  echo "Upgrading $company..."
-  COMPANY="$company" DOMAIN="$domain" \
-    docker compose --project-name "chatwoot_${company}" \
-    -f chatwoot-template/docker-compose.yml \
-    pull
-  COMPANY="$company" DOMAIN="$domain" \
-    docker compose --project-name "chatwoot_${company}" \
-    -f chatwoot-template/docker-compose.yml \
-    up -d
-  docker exec "chatwoot_${company}_web" bundle exec rails db:migrate
-done
+docker compose pull chatwoot evolution traefik
+docker compose up -d
 ```
 
-### Upgrade infrastructure
+The `chatwoot` container automatically applies pending database migrations (`db:chatwoot_prepare`) on every restart — no manual migration step is needed.
+
+To upgrade PostgreSQL or Redis, pull and restart those services individually:
 
 ```bash
-docker compose -f infra/docker-compose.yml pull
-docker compose -f infra/docker-compose.yml up -d
+docker compose pull postgres redis
+docker compose up -d postgres redis
 ```
 
 ---
 
-## Evolution API — WhatsApp Integration
+## Backup and restore
 
-Each company stack includes a dedicated [Evolution API v2](https://doc.evolution-api.com/v2/en/integrations/chatwoot)
-container (`chatwoot_<company>_evolution`) that acts as a bridge between
-WhatsApp and Chatwoot.
-
-### Connectivity model
-
-```
-WhatsApp servers  ←──── outbound WebSocket (Baileys) ────→  Evolution API
-                                                               │  chatwoot-net
-Chatwoot (web)   ←──── internal HTTP (port 8080) ────────────┘
-```
-
-- **Evolution API is NOT exposed to the internet.** There are no Traefik labels,
-  no published ports, and no public DNS record needed for it.
-- **Outbound access to WhatsApp** works via the Docker default NAT gateway —
-  no extra firewall rules or configuration required.
-- **Chatwoot ↔ Evolution API** communication travels entirely over the shared
-  `chatwoot-net` Docker bridge using the internal container hostname
-  `chatwoot_<company>_evolution:8080`.
-
-### Connecting a WhatsApp number
-
-Evolution API instances (one per WhatsApp number) are managed through its REST
-API. You can call it from the Chatwoot Rails console, a one-off `curl` from the
-host, or any HTTP client that can reach the Docker network:
+### Backup the Chatwoot database
 
 ```bash
-# From the host — enter the evolution container's shell
-docker exec -it chatwoot_company1_evolution sh
-
-# Or call the API from the Chatwoot web container (same network)
-EVOLUTION_API_KEY=$(grep '^AUTHENTICATION_API_KEY=' companies/company1.env | cut -d= -f2)
-docker exec chatwoot_company1_web \
-  curl -s -X GET http://chatwoot_company1_evolution:8080/ \
-  -H "apikey: ${EVOLUTION_API_KEY}"
+docker compose exec postgres \
+  pg_dump -U chatwoot -d chatwoot \
+  | gzip > backups/chatwoot_$(date +%Y%m%d_%H%M%S).sql.gz
 ```
 
-### Connecting Evolution API to Chatwoot
-
-After creating a WhatsApp instance and scanning the QR code, link it to
-Chatwoot. The `url` must be the **internal** Chatwoot address so the call
-stays on the Docker network:
+### Backup the Evolution API database
 
 ```bash
-# Retrieve the Evolution API key from the company env file
-EVOLUTION_API_KEY=$(grep '^AUTHENTICATION_API_KEY=' companies/company1.env | cut -d= -f2)
+docker compose exec postgres \
+  pg_dump -U chatwoot -d evolution \
+  | gzip > backups/evolution_$(date +%Y%m%d_%H%M%S).sql.gz
+```
 
-docker exec chatwoot_company1_web \
-  curl -s -X POST \
-  "http://chatwoot_company1_evolution:8080/chatwoot/set/support" \
-  -H "apikey: ${EVOLUTION_API_KEY}" \
+### Restore a Chatwoot backup
+
+```bash
+gunzip -c backups/chatwoot_<timestamp>.sql.gz \
+  | docker compose exec -T postgres \
+      psql -U chatwoot -d chatwoot
+```
+
+### Backup uploaded files (local storage)
+
+```bash
+docker run --rm \
+  -v chatwoot_chatwoot_storage:/data \
+  -v "$(pwd)/backups":/backups \
+  alpine \
+  tar czf /backups/chatwoot_storage_$(date +%Y%m%d_%H%M%S).tar.gz -C /data .
+```
+
+---
+
+## Connecting Evolution API to a WhatsApp number
+
+1. Open `https://evo.chat.yourdomain.com` in your browser.
+2. Authenticate with the `AUTHENTICATION_API_KEY` from `evolution.env`.
+3. Create a new instance, scan the QR code with WhatsApp.
+4. Link the instance to Chatwoot via **Settings → Integrations → Evolution API** inside Chatwoot, or via the Evolution API REST endpoint:
+
+```bash
+# Read your Evolution API key
+EVO_KEY=$(grep AUTHENTICATION_API_KEY evolution.env | cut -d= -f2)
+
+# Link instance to Chatwoot
+# Replace <instance>, <chatwoot-account-id>, and <chatwoot-agent-token>
+curl -s -X POST \
+  "https://evo.chat.yourdomain.com/chatwoot/set/<instance>" \
+  -H "apikey: $EVO_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "enabled": true,
-    "accountId": "1",
+    "accountId": "<chatwoot-account-id>",
     "token": "<chatwoot-agent-token>",
-    "url": "http://chatwoot_company1_web:3000",
+    "url": "http://chatwoot:3000",
     "signMsg": true,
     "reopenConversation": true,
     "conversationPending": false,
@@ -405,85 +348,78 @@ docker exec chatwoot_company1_web \
   }'
 ```
 
-> 💡 Obtain the Chatwoot `accountId` and `token` from **Settings → Integrations
-> → API** inside the Chatwoot UI.
-
-### Evolution API environment variables
-
-The following variables in `companies/<company>.env` control Evolution API
-behaviour. They are filled in automatically by `scripts/create-company.sh`:
-
-| Variable | Purpose |
-|---|---|
-| `AUTHENTICATION_API_KEY` | Master API key (keep this secret) |
-| `DATABASE_CONNECTION_URI` | PostgreSQL URI (`evolution_<company>` database) |
-| `CACHE_REDIS_URI` | Redis URI (DB index 1, separate from Chatwoot's index 0) |
-| `CACHE_REDIS_PREFIX_KEY` | Per-company key prefix (`evolution_<company>`) |
-| `DEL_INSTANCE` | `false` — keep instances after container restart |
+> �� Obtain the Chatwoot `accountId` and `token` from **Settings → Integrations → API** in the Chatwoot UI.
 
 ---
 
 ## Troubleshooting
 
+### Chatwoot takes a long time to start
+
+On first start, `db:chatwoot_prepare` loads the full database schema. This is normal and takes 1–3 minutes. Follow the logs with `docker compose logs -f chatwoot`.
+
 ### `unable to parse email address` (ACME / Let's Encrypt)
 
-`ACME_EMAIL` in `infra/.env` is empty or uses a display-name format that the
-ACME protocol does not accept.
+`ACME_EMAIL` in `.env` is empty or has a display-name format:
 
 ```bash
-nano infra/.env
-# MUST be a plain address — no display name, no angle brackets:
+nano .env
+# Must be a plain address:
 #   ✔  ACME_EMAIL=you@yourdomain.com
 #   ✖  ACME_EMAIL=Your Name <you@yourdomain.com>
-#   ✖  ACME_EMAIL=          (empty)
 
-docker compose -f infra/docker-compose.yml up -d --force-recreate traefik
+docker compose restart traefik
 ```
 
----
+### `contact email has forbidden domain "example.com"`
 
-### Chatwoot is not sending e-mails (invitations, login links, notifications)
+`ACME_EMAIL` still contains the placeholder. Set a real address in `.env` and restart Traefik.
 
-SMTP is not configured. Open the company's env file and fill in the SMTP block:
+### `permissions 755 for /acme.json are too open`
 
 ```bash
-nano companies/<company>.env
-# Fill in every SMTP_* variable and MAILER_SENDER_EMAIL.
-# Example using Gmail App Password:
-#   SMTP_ADDRESS=smtp.gmail.com
-#   SMTP_PORT=587
-#   SMTP_DOMAIN=yourdomain.com
-#   SMTP_USERNAME=you@gmail.com
-#   SMTP_PASSWORD=<16-char app password>
-#   SMTP_AUTHENTICATION=plain
-#   SMTP_ENABLE_STARTTLS_AUTO=true
-#   MAILER_SENDER_EMAIL=support@yourdomain.com
-
-# Restart the company stack to pick up the new settings:
-COMPANY=<company> DOMAIN=<domain> \
-  docker compose --project-name chatwoot_<company> \
-  -f chatwoot-template/docker-compose.yml \
-  up -d
+chmod 600 acme.json
+docker compose restart traefik
 ```
 
-> 💡 Free SMTP relays: [Resend](https://resend.com), [SendGrid](https://sendgrid.com),
-> [Mailgun](https://mailgun.com). All provide generous free tiers.
+### TLS certificate not issued
 
----
+1. Confirm DNS has propagated: `dig chat.yourdomain.com`
+2. Confirm port 80 is reachable from the internet.
+3. Check Traefik logs: `docker compose logs traefik | grep -i acme`
+
+### Chatwoot is not sending e-mails
+
+SMTP is not configured or is misconfigured. Edit `chatwoot.env`, update the `SMTP_*` block, then restart:
+
+```bash
+docker compose restart chatwoot
+```
+
+### `FATAL: database "chatwoot" does not exist`
+
+The postgres container was started without the `POSTGRES_DB: chatwoot` environment variable. Remove the volume and let it re-initialise:
+
+```bash
+docker compose down -v
+docker compose up -d postgres redis
+# Wait for healthy, then:
+docker compose exec postgres psql -U chatwoot -c "CREATE DATABASE evolution;"
+docker compose up -d
+```
+
+### `FATAL: database "evolution" does not exist`
+
+The evolution database was not created. While postgres is running:
+
+```bash
+docker compose exec postgres psql -U chatwoot -c "CREATE DATABASE evolution;"
+docker compose restart evolution
+```
 
 ### Redis `WARNING Memory overcommit must be enabled!`
 
-This is a Redis advisory about the host kernel parameter `vm.overcommit_memory`.
-It is silenced automatically by the `--ignore-warnings OVERCOMMIT_MEMORY` flag
-added to the Redis command in `infra/docker-compose.yml`.
-
-If you see it on an older deployment, either recreate the Redis container:
-
-```bash
-docker compose -f infra/docker-compose.yml up -d --force-recreate redis
-```
-
-Or permanently fix it on the **host** (recommended for production):
+This warning is silenced by the `--ignore-warnings OVERCOMMIT_MEMORY` flag in `docker-compose.yml`. To fix it permanently on the host:
 
 ```bash
 echo 'vm.overcommit_memory = 1' | sudo tee -a /etc/sysctl.conf
@@ -492,82 +428,54 @@ sudo sysctl -p
 
 ---
 
-### `contact email has forbidden domain "example.com"`
-
-`ACME_EMAIL` in `infra/.env` is still set to the example.com placeholder.
-
-```bash
-nano infra/.env
-# Set:  ACME_EMAIL=you@yourdomain.com
-
-docker compose -f infra/docker-compose.yml up -d --force-recreate traefik
-```
-
----
-
-### `permissions 755 for /acme.json are too open`
-
-The `acme.json` file must be readable only by root/Traefik.
-
-```bash
-chmod 600 infra/acme.json
-docker compose -f infra/docker-compose.yml restart traefik
-```
-
----
-
-### `FATAL: database "chatwoot_company1" does not exist`
-
-The database was not provisioned before the containers started. Run:
-
-```bash
-COMPANY=company1 DOMAIN=company1.chat.yourdomain.com \
-  docker compose --project-name chatwoot_company1 \
-  -f chatwoot-template/docker-compose.yml \
-  run --rm web bundle exec rails db:chatwoot_prepare
-```
-
----
-
-### `Role "company1" does not exist`
-
-`POSTGRES_USERNAME` in `companies/company1.env` was set to the company name
-instead of the shared Postgres superuser. Fix it:
-
-```bash
-# Check the correct username
-grep POSTGRES_USERNAME infra/.env
-
-# Fix the company env
-sed -i "s/^POSTGRES_USERNAME=.*/POSTGRES_USERNAME=chatwoot/" companies/company1.env
-
-# Restart
-COMPANY=company1 DOMAIN=company1.chat.yourdomain.com \
-  docker compose --project-name chatwoot_company1 \
-  -f chatwoot-template/docker-compose.yml \
-  up -d
-```
-
----
-
-### TLS certificate not issued
-
-1. Confirm DNS is propagated: `dig company1.chat.yourdomain.com`
-2. Confirm port 80 is reachable from the internet.
-3. Check Traefik logs:
-   ```bash
-   docker compose -f infra/docker-compose.yml logs traefik 2>&1 | grep -i acme
-   ```
-4. If you see `acme.json` permission errors, run `chmod 600 infra/acme.json`
-   and restart Traefik.
-
----
-
 ## Security notes
 
-- `infra/.env` and `infra/acme.json` are listed in `.gitignore` and must **never** be committed.
-- `companies/*.env` files are also gitignored — they contain per-company secrets.
-- Each company has unique `SECRET_KEY_BASE` and `ACTIVE_RECORD_ENCRYPTION_*` keys.
-- PostgreSQL and Redis have **no published ports** — only reachable inside `chatwoot-net`.
-- Traefik only routes containers that carry the `traefik.enable=true` label.
-- Back up `infra/.env` and `companies/*.env` — losing them means losing access to your data.
+- `.env`, `chatwoot.env`, and `evolution.env` are listed in `.gitignore` — never commit them.
+- `acme.json` is also gitignored — it contains your TLS private keys.
+- Generate unique cryptographic secrets for each deployment.
+- PostgreSQL and Redis have **no published ports** — accessible only inside `chatwoot-net`.
+- Traefik only routes containers carrying the `traefik.enable=true` label.
+- Back up your env files and `acme.json` — losing them means losing access to your data and TLS certificates.
+
+---
+
+## Env file reference
+
+### .env
+
+| Variable | Required | Description |
+|---|---|---|
+| `DOMAIN` | ✅ | Public hostname for Chatwoot (e.g. `chat.yourdomain.com`) |
+| `ACME_EMAIL` | ✅ | Plain e-mail for Let's Encrypt certificate registration |
+| `POSTGRES_USERNAME` | ✅ | PostgreSQL superuser name |
+| `POSTGRES_PASSWORD` | ✅ | PostgreSQL superuser password |
+| `REDIS_PASSWORD` | ✅ | Redis authentication password |
+
+### chatwoot.env
+
+| Variable | Required | Description |
+|---|---|---|
+| `SECRET_KEY_BASE` | ✅ | Rails secret key (`openssl rand -hex 64`) |
+| `ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY` | ✅ | Encryption key (`openssl rand -hex 32`) |
+| `ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT` | ✅ | Encryption salt (`openssl rand -hex 32`) |
+| `ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY` | ✅ | Encryption primary key (`openssl rand -hex 32`) |
+| `POSTGRES_HOST` | ✅ | Must be `chatwoot_postgres` |
+| `POSTGRES_DATABASE` | ✅ | Must be `chatwoot` |
+| `POSTGRES_USERNAME` | ✅ | Same as `.env` |
+| `POSTGRES_PASSWORD` | ✅ | Same as `.env` |
+| `REDIS_URL` | ✅ | `redis://:<password>@chatwoot_redis:6379/0` |
+| `SMTP_ADDRESS` | ✅ | SMTP server hostname |
+| `SMTP_PORT` | ✅ | SMTP port (usually 587) |
+| `SMTP_USERNAME` | ✅ | SMTP username |
+| `SMTP_PASSWORD` | ✅ | SMTP password |
+| `MAILER_SENDER_EMAIL` | ✅ | Sender address for outbound e-mails |
+
+### evolution.env
+
+| Variable | Required | Description |
+|---|---|---|
+| `AUTHENTICATION_API_KEY` | ✅ | Master API key (`openssl rand -hex 32`) |
+| `DATABASE_CONNECTION_URI` | ✅ | PostgreSQL URI using the `evolution` database |
+| `CACHE_REDIS_URI` | ✅ | Redis URI using DB index 1 |
+| `CHATWOOT_ENABLED` | ✅ | Must be `true` to enable the Chatwoot integration |
+| `DEL_INSTANCE` | — | `false` — preserve instances across restarts |
