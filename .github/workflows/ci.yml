@@ -81,16 +81,30 @@ jobs:
 
       # -----------------------------------------------------------------------
       # 4. Create account, admin user, and two agents; then verify
+      #
+      # ENABLE_ACCOUNT_SIGNUP is false (default) so we cannot use /auth/sign_up.
+      # Instead we use 'rails runner' to create the account + admin directly in
+      # the database, obtain the API access token, then use the Chatwoot REST
+      # API to create agents and verify them.
       # -----------------------------------------------------------------------
       - name: Create account and verify agents
         run: |
-          RESP=$(curl -sf -X POST http://localhost:3000/auth/sign_up \
-            -H "Content-Type: application/json" \
-            -d '{"account_name":"testco","user_full_name":"Admin","email":"admin@testco.com","password":"TestPass123!"}')
-          TOKEN=$(echo "$RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['access_token'])")
-          ACCOUNT=$(echo "$RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['account_id'])")
+          RESULT=$(docker exec chatwoot_rails bundle exec rails runner "
+            Rails.logger = Logger.new('/dev/null')
+            account = Account.create!(name: 'testco')
+            user = User.new(name: 'Admin', email: 'admin@testco.com',
+                            password: 'TestPass123!', password_confirmation: 'TestPass123!')
+            user.skip_confirmation!
+            user.save!
+            AccountUser.create!(account_id: account.id, user_id: user.id, role: :administrator)
+            token = UserAccessToken.create!(user_id: user.id)
+            \$stdout.puts({token: token.token, account_id: account.id}.to_json)
+          " 2>/dev/null | grep '^{' | tail -1)
+          echo "Rails result: $RESULT"
+          TOKEN=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin)['token'])")
+          ACCOUNT=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin)['account_id'])")
           echo "::add-mask::$TOKEN"
-          echo "✔ Account testco created"
+          echo "✔ Account testco and admin@testco.com created (account_id=${ACCOUNT})"
 
           for EMAIL in test1@testco.com test2@testco.com; do
             NAME=$(echo "$EMAIL" | cut -d@ -f1)
