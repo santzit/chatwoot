@@ -107,7 +107,7 @@ jobs:
         run: |
           RESULT=$(docker exec chatwoot_rails bundle exec rails runner "
             Rails.logger = Logger.new('/dev/null')
-            platform_app = PlatformApp.create!(name: 'CI App', active: true)
+            platform_app = PlatformApp.create!(name: 'CI App')
             account = Account.create!(name: 'testco')
             \$stdout.puts({
               platform_token: platform_app.access_token.token,
