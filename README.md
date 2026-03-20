@@ -367,7 +367,40 @@ curl -s -X POST \
 
 On first start, `db:chatwoot_prepare` loads the full database schema. This is normal and takes 1–3 minutes. Follow the logs with `docker compose logs -f chatwoot`.
 
-### `unable to parse email address` (ACME / Let's Encrypt)
+### `Error: Database provider  invalid` (Evolution API exits with code 1)
+
+This means `DATABASE_PROVIDER` in `evolution.env` is empty or unset. This often happens when the file was transferred from Windows and contains CRLF line endings that confuse the env parser.
+
+Check the value:
+
+```bash
+grep DATABASE_PROVIDER evolution.env
+```
+
+If the output is `DATABASE_PROVIDER=` (empty) or the value shows invisible characters, fix it:
+
+```bash
+# Set correct value
+sed -i 's/\r//' evolution.env            # strip Windows CRLF if present
+sed -i 's/^DATABASE_PROVIDER=.*/DATABASE_PROVIDER=postgresql/' evolution.env
+docker compose up -d evolution
+```
+
+If you are creating the file from scratch, ensure the line is exactly:
+```
+DATABASE_PROVIDER=postgresql
+```
+
+### `middleware "redirect-https@docker" does not exist` (Traefik)
+
+This error appears when the Evolution API container starts before the Chatwoot container (which previously defined the shared `redirect-https` middleware). Fixed in commit `514f1a7` and later — each service now defines the middleware independently. Pull the latest changes and re-deploy:
+
+```bash
+git pull
+docker compose up -d
+```
+
+
 
 `ACME_EMAIL` in `.env` is empty or has a display-name format:
 
