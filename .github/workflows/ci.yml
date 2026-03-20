@@ -5,12 +5,12 @@
 #   1. Generating env files from examples.
 #   2. Starting PostgreSQL and Redis.
 #   3. Creating the evolution database.
-#   4. Starting the unified Chatwoot container (runs db:chatwoot_prepare
-#      then web server + Sidekiq worker in one container).
-#   5. Creating account "testco" with admin user admin@testco.com.
-#   6. Creating two agents: test1@testco.com and test2@testco.com.
-#   7. Verifying all users exist via the Chatwoot Agents API.
-#   8. Checking Chatwoot logs for FATAL errors.
+#   4. Starting the Chatwoot web server (runs db:chatwoot_prepare then rails s).
+#   5. Starting the Chatwoot worker (Sidekiq, after web is healthy).
+#   6. Creating account "testco" with admin user admin@testco.com.
+#   7. Creating two agents: test1@testco.com and test2@testco.com.
+#   8. Verifying all users exist via the Chatwoot Agents API.
+#   9. Checking Chatwoot web and worker logs for FATAL errors.
 # =============================================================================
 
 name: CI
