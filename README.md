@@ -241,6 +241,22 @@ docker run --rm \
 
 On first start, `db:chatwoot_prepare` loads the full database schema. This is normal and takes 1–3 minutes. Follow the logs with `docker compose logs -f rails`.
 
+### HTTP 500 — `relation "installation_configs" does not exist`
+
+This means Rails started but database migrations did not run (the schema is empty). This can happen if postgres was not fully ready when rails started, or if there is a stale volume from a previous deployment.
+
+**Option A — trigger migrations on the running container:**
+```bash
+docker exec chatwoot_rails bundle exec rails db:migrate
+docker compose restart rails
+```
+
+**Option B — full reset (data will be lost):**
+```bash
+docker compose down -v
+docker compose up -d
+```
+
 ### `unable to parse email address` (ACME / Let's Encrypt)
 
 `ACME_EMAIL` in `.env` is empty or has a display-name format. Fix it and clear the stale ACME cache:
