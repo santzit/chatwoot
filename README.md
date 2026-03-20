@@ -105,7 +105,7 @@ Set the database and Redis credentials to match `.env`:
 ```env
 POSTGRES_USERNAME=chatwoot              # same as .env
 POSTGRES_PASSWORD=<same-as-env>         # same as .env
-REDIS_URL=redis://:<same-as-env-redis-password>@chatwoot_redis:6379/0
+REDIS_URL=redis://:<same-as-env-redis-password>@redis:6379/0
 ```
 
 Fill in the SMTP block so Chatwoot can send invitation and notification e-mails:
@@ -144,8 +144,8 @@ Set the database URI using the same credentials as `.env` and the `evolution` da
 
 ```env
 AUTHENTICATION_API_KEY=<generated-key>
-DATABASE_CONNECTION_URI=postgresql://chatwoot:<postgres-password>@chatwoot_postgres:5432/evolution
-CACHE_REDIS_URI=redis://:<redis-password>@chatwoot_redis:6379/1
+DATABASE_CONNECTION_URI=postgresql://chatwoot:<postgres-password>@postgres:5432/evolution
+CACHE_REDIS_URI=redis://:<redis-password>@redis:6379/1
 ```
 
 > ℹ️ `SERVER_URL` is set automatically by `docker-compose.yml` from `DOMAIN` — do not add it to `evolution.env`.
@@ -424,7 +424,7 @@ docker compose restart evolution
 
 ### Redis `WARNING Memory overcommit must be enabled!`
 
-This warning is silenced by the `--ignore-warnings OVERCOMMIT_MEMORY` flag in `docker-compose.yml`. To fix it permanently on the host:
+This warning is a cosmetic kernel advisory. To silence it permanently on the host:
 
 ```bash
 echo 'vm.overcommit_memory = 1' | sudo tee -a /etc/sysctl.conf
@@ -464,11 +464,11 @@ sudo sysctl -p
 | `ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY` | ✅ | Encryption key (`openssl rand -hex 32`) |
 | `ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT` | ✅ | Encryption salt (`openssl rand -hex 32`) |
 | `ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY` | ✅ | Encryption primary key (`openssl rand -hex 32`) |
-| `POSTGRES_HOST` | ✅ | Must be `chatwoot_postgres` |
+| `POSTGRES_HOST` | ✅ | Must be `postgres` (Docker Compose service name) |
 | `POSTGRES_DATABASE` | ✅ | Must be `chatwoot` |
 | `POSTGRES_USERNAME` | ✅ | Same as `.env` |
 | `POSTGRES_PASSWORD` | ✅ | Same as `.env` |
-| `REDIS_URL` | ✅ | `redis://:<password>@chatwoot_redis:6379/0` |
+| `REDIS_URL` | ✅ | `redis://:<password>@redis:6379/0` |
 | `SMTP_ADDRESS` | ✅ | SMTP server hostname |
 | `SMTP_PORT` | ✅ | SMTP port (usually 587) |
 | `SMTP_USERNAME` | ✅ | SMTP username |

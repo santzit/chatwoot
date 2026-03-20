@@ -72,12 +72,12 @@ jobs:
             "ACTIVE_RECORD_ENCRYPTION_DETERMINISTIC_KEY=${ENC_DET}" \
             "ACTIVE_RECORD_ENCRYPTION_KEY_DERIVATION_SALT=${ENC_SALT}" \
             "ACTIVE_RECORD_ENCRYPTION_PRIMARY_KEY=${ENC_PRIM}" \
-            'POSTGRES_HOST=chatwoot_postgres' \
+            'POSTGRES_HOST=postgres' \
             'POSTGRES_PORT=5432' \
             'POSTGRES_DATABASE=chatwoot' \
             'POSTGRES_USERNAME=chatwoot' \
             'POSTGRES_PASSWORD=testpass' \
-            'REDIS_URL=redis://:testredis@chatwoot_redis:6379/0' \
+            'REDIS_URL=redis://:testredis@redis:6379/0' \
             'SMTP_ADDRESS=localhost' \
             'SMTP_PORT=1025' \
             'SMTP_DOMAIN=localhost' \
@@ -97,7 +97,7 @@ jobs:
             "AUTHENTICATION_API_KEY=${EVO_KEY}" \
             'DATABASE_ENABLED=true' \
             'DATABASE_PROVIDER=postgresql' \
-            'DATABASE_CONNECTION_URI=postgresql://chatwoot:testpass@chatwoot_postgres:5432/evolution' \
+            'DATABASE_CONNECTION_URI=postgresql://chatwoot:testpass@postgres:5432/evolution' \
             'DATABASE_CONNECTION_CLIENT_NAME=evolution' \
             'DATABASE_SAVE_DATA_INSTANCE=true' \
             'DATABASE_SAVE_DATA_NEW_MESSAGE=true' \
@@ -107,7 +107,7 @@ jobs:
             'DATABASE_SAVE_DATA_LABELS=true' \
             'DATABASE_SAVE_DATA_HISTORIC=true' \
             'CACHE_REDIS_ENABLED=true' \
-            'CACHE_REDIS_URI=redis://:testredis@chatwoot_redis:6379/1' \
+            'CACHE_REDIS_URI=redis://:testredis@redis:6379/1' \
             'CACHE_REDIS_PREFIX_KEY=evolution' \
             'CACHE_REDIS_SAVE_INSTANCES=false' \
             'CACHE_LOCAL_ENABLED=false' \
