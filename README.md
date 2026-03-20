@@ -410,6 +410,9 @@ Common causes and fixes:
 | `DOMAIN` placeholder not replaced | `.env` still has `DOMAIN=chat.yourdomain.com` | Edit `.env` with your real domain, then `docker compose up -d` |
 
 
+### TLS certificate not issued
+
+1. Confirm DNS has propagated: `dig app.chat.yourdomain.com`
 2. Confirm port 80 is reachable from the internet.
 3. Check Traefik logs: `docker compose logs traefik | grep -i acme`
 
