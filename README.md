@@ -8,7 +8,7 @@ Internet
     ▼
 Traefik  (ports 80 / 443, automatic TLS via Let's Encrypt)
     │
-    ├── chat.yourdomain.com      →  chatwoot         (Rails web server)
+    ├── app.chat.yourdomain.com  →  chatwoot         (Rails web server)
     └── evo.chat.yourdomain.com  →  chatwoot_evolution (Evolution API v2)
 
 Shared network (chatwoot-net)
@@ -46,7 +46,7 @@ Shared network (chatwoot-net)
 |---|---|
 | Ubuntu 22.04 or 24.04 LTS | Other Linux distros work |
 | Docker ≥ 24 + Docker Compose v2 | `curl -fsSL https://get.docker.com \| sh` |
-| A DNS A record for your domain | e.g. `chat.yourdomain.com → <server-ip>` |
+| A DNS A record for the app subdomain | e.g. `app.chat.yourdomain.com → <server-ip>` |
 | A DNS A record for the evo subdomain | e.g. `evo.chat.yourdomain.com → <server-ip>` |
 | Ports 80 and 443 open | Required by Traefik and the ACME HTTP-01 challenge |
 
@@ -72,12 +72,16 @@ cp .env.example .env
 Edit `.env` and fill in every value:
 
 ```env
-DOMAIN=chat.yourdomain.com              # ← your real domain (no protocol prefix)
+DOMAIN=chat.yourdomain.com              # ← base domain (no protocol prefix)
 ACME_EMAIL=you@yourdomain.com           # ← plain e-mail for Let's Encrypt
 POSTGRES_USERNAME=chatwoot
 POSTGRES_PASSWORD=<strong-password>     # openssl rand -hex 32
 REDIS_PASSWORD=<strong-password>        # openssl rand -hex 32
 ```
+
+With `DOMAIN=chat.yourdomain.com`, Traefik will serve:
+- Chatwoot at `https://app.chat.yourdomain.com`
+- Evolution API at `https://evo.chat.yourdomain.com`
 
 > ⚠️ `ACME_EMAIL` must be a plain address — no display name, no angle brackets.
 > Using `@example.com` is rejected by Let's Encrypt with "forbidden domain".
@@ -213,9 +217,9 @@ Look for a line like:
 * Listening on http://0.0.0.0:3000
 ```
 
-Once it appears, `chatwoot-worker` will start automatically. Open `https://chat.yourdomain.com` in your browser. Traefik issues the TLS certificate automatically via Let's Encrypt (may take up to 60 seconds on first request — DNS must be live).
+Once it appears, `chatwoot-worker` will start automatically. Open `https://app.chat.yourdomain.com` in your browser. Traefik issues the TLS certificate automatically via Let's Encrypt (may take up to 60 seconds on first request — DNS must be live).
 
-> ⚠️ DNS A records for both `chat.yourdomain.com` and `evo.chat.yourdomain.com` must resolve to your server IP before Traefik can complete the ACME challenge.
+> ⚠️ DNS A records for both `app.chat.yourdomain.com` and `evo.chat.yourdomain.com` must resolve to your server IP before Traefik can complete the ACME challenge.
 
 ---
 
@@ -389,7 +393,7 @@ docker compose restart traefik
 
 ### TLS certificate not issued
 
-1. Confirm DNS has propagated: `dig chat.yourdomain.com`
+1. Confirm DNS has propagated: `dig app.chat.yourdomain.com`
 2. Confirm port 80 is reachable from the internet.
 3. Check Traefik logs: `docker compose logs traefik | grep -i acme`
 
@@ -450,7 +454,7 @@ sudo sysctl -p
 
 | Variable | Required | Description |
 |---|---|---|
-| `DOMAIN` | ✅ | Public hostname for Chatwoot (e.g. `chat.yourdomain.com`) |
+| `DOMAIN` | ✅ | Base domain; Chatwoot served at `app.<DOMAIN>`, Evolution at `evo.<DOMAIN>` (e.g. `chat.yourdomain.com`) |
 | `ACME_EMAIL` | ✅ | Plain e-mail for Let's Encrypt certificate registration |
 | `POSTGRES_USERNAME` | ✅ | PostgreSQL superuser name |
 | `POSTGRES_PASSWORD` | ✅ | PostgreSQL superuser password |

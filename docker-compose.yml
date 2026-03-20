@@ -128,7 +128,7 @@ services:
     env_file:
       - chatwoot.env
     environment:
-      FRONTEND_URL: "https://${DOMAIN}"
+      FRONTEND_URL: "https://app.${DOMAIN}"
     command: sh -c "bundle exec rails db:chatwoot_prepare && bundle exec rails s -p 3000 -b 0.0.0.0"
     volumes:
       - chatwoot_storage:/app/storage
@@ -146,14 +146,14 @@ services:
       - "traefik.enable=true"
 
       # HTTP → HTTPS redirect
-      - "traefik.http.routers.chatwoot-http.rule=Host(`${DOMAIN}`)"
+      - "traefik.http.routers.chatwoot-http.rule=Host(`app.${DOMAIN}`)"
       - "traefik.http.routers.chatwoot-http.entrypoints=web"
       - "traefik.http.routers.chatwoot-http.middlewares=redirect-https@docker"
       - "traefik.http.middlewares.redirect-https.redirectscheme.scheme=https"
       - "traefik.http.middlewares.redirect-https.redirectscheme.permanent=true"
 
       # HTTPS router with Let's Encrypt TLS
-      - "traefik.http.routers.chatwoot.rule=Host(`${DOMAIN}`)"
+      - "traefik.http.routers.chatwoot.rule=Host(`app.${DOMAIN}`)"
       - "traefik.http.routers.chatwoot.entrypoints=websecure"
       - "traefik.http.routers.chatwoot.tls=true"
       - "traefik.http.routers.chatwoot.tls.certresolver=letsencrypt"
@@ -180,7 +180,7 @@ services:
     env_file:
       - chatwoot.env
     environment:
-      FRONTEND_URL: "https://${DOMAIN}"
+      FRONTEND_URL: "https://app.${DOMAIN}"
     command: bundle exec sidekiq -C config/sidekiq.yml
     volumes:
       - chatwoot_storage:/app/storage

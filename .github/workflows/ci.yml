@@ -3,7 +3,7 @@
 #
 # Spins up the single-domain Chatwoot stack and verifies it works by:
 #   1. Generating env files from examples.
-#   2. Adding chat.localhost to /etc/hosts so the runner resolves the domain.
+#   2. Adding app.chat.localhost (and evo.chat.localhost) to /etc/hosts so the runner resolves the domain.
 #   3. Starting PostgreSQL, Redis, and Traefik.
 #   4. Creating the evolution database.
 #   5. Starting the Chatwoot web server (runs db:chatwoot_prepare then rails s).
@@ -13,7 +13,7 @@
 #   9. Verifying all users exist via the Chatwoot Agents API through Traefik.
 #  10. Checking Chatwoot web and worker logs for FATAL errors.
 #
-# All HTTP calls go through Traefik on the test hostname (chat.localhost).
+# All HTTP calls go through Traefik on the test hostname (app.chat.localhost).
 # TLS is active (-k / --insecure skips cert validation since ACME cannot
 # issue a cert for localhost in CI).
 # =============================================================================
@@ -40,7 +40,7 @@ jobs:
       # -k / --insecure is required because ACME cannot issue a cert for a
       # .localhost domain in CI; Traefik falls back to its built-in self-signed
       # certificate.
-      CHATWOOT_URL: https://chat.localhost
+      CHATWOOT_URL: https://app.chat.localhost
 
     steps:
       - uses: actions/checkout@v4
@@ -117,13 +117,16 @@ jobs:
           chmod 600 evolution.env
 
       # -----------------------------------------------------------------------
-      # 2. Register the test hostname on the runner
-      #    All curl calls use CHATWOOT_URL (https://chat.localhost) which
+      # 2. Register the test hostnames on the runner
+      #    All curl calls use CHATWOOT_URL (https://app.chat.localhost) which
       #    Traefik listens on. Traefik routes the Host header to the chatwoot
       #    container — no direct container IP access anywhere in this workflow.
       # -----------------------------------------------------------------------
-      - name: Register chat.localhost in /etc/hosts
-        run: echo "127.0.0.1 chat.localhost" | sudo tee -a /etc/hosts
+      - name: Register test hostnames in /etc/hosts
+        run: |
+          echo "127.0.0.1 chat.localhost" | sudo tee -a /etc/hosts
+          echo "127.0.0.1 app.chat.localhost" | sudo tee -a /etc/hosts
+          echo "127.0.0.1 evo.chat.localhost" | sudo tee -a /etc/hosts
 
       # -----------------------------------------------------------------------
       # 3. Start PostgreSQL, Redis, and Traefik
@@ -184,7 +187,7 @@ jobs:
       - name: Wait for Chatwoot to be ready via Traefik
         timeout-minutes: 5
         run: |
-          # Poll https://chat.localhost/auth/sign_in through Traefik.
+          # Poll https://app.chat.localhost/auth/sign_in through Traefik.
           # -k  skips TLS cert verification (self-signed fallback in CI).
           # -L  follows the HTTP→HTTPS redirect from Traefik's web entrypoint.
           # Exits non-zero (fails the step) if DEADLINE is reached.
