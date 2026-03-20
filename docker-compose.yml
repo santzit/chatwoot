@@ -2,12 +2,13 @@
 # docker-compose.yml  –  Simplified single-domain Chatwoot deployment (v0.2x)
 #
 # Services:
-#   • traefik    — reverse proxy, automatic TLS (Let's Encrypt)
-#   • postgres   — PostgreSQL 16 with pgvector (chatwoot DB created
-#                  automatically; evolution DB must be created first — see README)
-#   • redis      — cache and job queues (shared, password-protected)
-#   • chatwoot   — unified container: web server + Sidekiq worker in one
-#   • evolution  — Evolution API v2 (WhatsApp integration bridge)
+#   • traefik         — reverse proxy, automatic TLS (Let's Encrypt)
+#   • postgres        — PostgreSQL 16 with pgvector (chatwoot DB created
+#                       automatically; evolution DB must be created first — see README)
+#   • redis           — cache and job queues (shared, password-protected)
+#   • chatwoot        — Rails web server (runs DB migrations on start)
+#   • chatwoot-worker — Sidekiq background worker (starts after web is healthy)
+#   • evolution       — Evolution API v2 (WhatsApp integration bridge)
 #
 # Prerequisites / first-time setup: see README.md
 #
@@ -133,7 +134,9 @@ services:
       - chatwoot-net
     healthcheck:
       # Pure-bash TCP probe — no curl/wget required in the image.
-      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/3000'"]
+      # Opens /dev/tcp/localhost/3000 for reading; exits non-zero if the
+      # connection is refused (port not yet listening).
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/3000'"]
       interval: 15s
       timeout: 5s
       retries: 12
