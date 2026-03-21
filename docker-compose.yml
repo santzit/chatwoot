@@ -180,6 +180,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     env_file: evolution.env
     environment:
       - SERVER_URL=https://evo.${DOMAIN}
