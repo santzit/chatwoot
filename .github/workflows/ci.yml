@@ -1,10 +1,13 @@
 # =============================================================================
 # .github/workflows/ci.yml  –  Chatwoot stack CI (v0.2x)
 #
-# Starts postgres + redis + rails, waits for the Rails API and DB to be ready.
-# User creation is deferred to a later phase.
+# Starts the full stack (traefik + postgres + redis + rails + sidekiq +
+# evolution-api).  All readiness checks and API tests run INSIDE the
+# chatwoot_rails container over the Docker network — no host port bindings
+# or Traefik routing required.
 #
-# All HTTP calls hit http://localhost:3000 directly (no Traefik, no TLS).
+# Docker images are cached between runs (keyed by docker-compose.yml hash)
+# to speed up cold starts.
 # =============================================================================
 
 name: CI
@@ -58,33 +61,137 @@ jobs:
             > chatwoot.env
           chmod 600 chatwoot.env
 
-      # -----------------------------------------------------------------------
-      # 2. Start postgres + redis + rails  (sidekiq not needed for this test)
-      # -----------------------------------------------------------------------
-      - name: Start stack
-        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml up -d rails
+          # Use a fixed key so CI test steps can reference it in rails runner.
+          # Evolution API v2 always requires PostgreSQL — point it at the
+          # shared chatwoot postgres using a separate schema (evolution_api).
+          printf '%s\n' \
+            'AUTHENTICATION_API_KEY=ci-evolution-api-key' \
+            'CHATWOOT_ENABLED=true' \
+            'DEL_INSTANCE=false' \
+            'DATABASE_PROVIDER=postgresql' \
+            'DATABASE_CONNECTION_URI=postgresql://chatwoot:testpass@postgres:5432/chatwoot_production?schema=evolution_api' \
+            'DATABASE_CONNECTION_CLIENT_NAME=evolution_api' \
+            'CACHE_REDIS_ENABLED=false' \
+            'CACHE_LOCAL_ENABLED=true' \
+            > evolution.env
+          chmod 600 evolution.env
 
       # -----------------------------------------------------------------------
-      # 3. Wait for Chatwoot to be ready
+      # 2. Docker image cache
       #
-      # Two-phase wait:
-      #   a) HTTP: /auth/sign_in returns 200 (proves Rails is up)
-      #   b) DB:   rails runner "Account.count" succeeds (proves schema is ready)
+      # Cache all pulled images as a tar archive keyed by docker-compose.yml.
+      # On a cache hit, "docker load" pre-populates the daemon so "up -d" is
+      # near-instant.  On a miss, images are pulled during "up -d", then saved
+      # for the next run.  Traefik is omitted from the save to reduce size.
+      # -----------------------------------------------------------------------
+      - name: Restore Docker image cache
+        id: docker-cache
+        uses: actions/cache@v4
+        with:
+          path: /tmp/docker-images.tar
+          key: docker-images-${{ runner.os }}-${{ hashFiles('docker-compose.yml') }}
+
+      - name: Load cached Docker images
+        if: steps.docker-cache.outputs.cache-hit == 'true'
+        run: docker load -i /tmp/docker-images.tar
+
+      # -----------------------------------------------------------------------
+      # 3. Start full stack
+      # -----------------------------------------------------------------------
+      - name: Start stack
+        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml up -d
+
+      # -----------------------------------------------------------------------
+      # Save images on first pull (cache miss only)
+      #
+      # Uses "docker compose config --images" to derive the image list
+      # dynamically from docker-compose.yml so this step never drifts out of
+      # sync when image versions are bumped.
+      # -----------------------------------------------------------------------
+      - name: Save Docker images to cache
+        if: steps.docker-cache.outputs.cache-hit != 'true'
+        run: |
+          docker compose -f docker-compose.yml config --images \
+            | xargs docker save -o /tmp/docker-images.tar
+
+      # -----------------------------------------------------------------------
+      # 4. Wait for Chatwoot to be ready
+      #
+      # Runs "rails runner Account.count" inside chatwoot_rails — this is the
+      # most reliable check because it:
+      #   • loads the full Rails environment (proves Rails can boot)
+      #   • queries the DB (proves postgres is up and schema is migrated)
+      # It does NOT require Puma/HTTP since our tests call evolution-api
+      # directly via Net::HTTP, not through the rails web server.
       # -----------------------------------------------------------------------
       - name: Wait for Chatwoot
         timeout-minutes: 8
         run: |
-          until curl -sf http://localhost:3000/auth/sign_in > /dev/null 2>&1; do
-            echo "Waiting for Chatwoot HTTP..."
+          until docker exec chatwoot_rails bundle exec rails runner \
+              "Account.count" > /dev/null 2>&1; do
+            echo "Waiting for Chatwoot (Rails env + DB)..."
             sleep 10
           done
-          echo "✔ Chatwoot HTTP is ready"
+          echo "✔ Chatwoot is ready"
 
-          until docker exec chatwoot_rails bundle exec rails runner "Account.count" > /dev/null 2>&1; do
-            echo "Waiting for DB migrations to complete..."
-            sleep 15
+      # -----------------------------------------------------------------------
+      # 5. Wait for Evolution API to be ready
+      #
+      # TCP check runs inside chatwoot_rails using the Docker network service
+      # name "evolution-api" — no host port binding required.
+      # -----------------------------------------------------------------------
+      - name: Wait for Evolution API
+        timeout-minutes: 5
+        run: |
+          until docker exec chatwoot_rails nc -z evolution-api 8080 2>/dev/null; do
+            echo "Waiting for Evolution API..."
+            sleep 5
           done
-          echo "✔ Chatwoot DB is ready"
+          echo "✔ Evolution API is ready"
+
+      # -----------------------------------------------------------------------
+      # 6. Test Evolution API – create "testco" instance
+      #
+      # HTTP POST runs inside chatwoot_rails via ruby (stdlib Net::HTTP), calling
+      # evolution-api:8080 over the Docker network.
+      # Expects HTTP 201 and a JSON body containing "instanceName":"testco".
+      # -----------------------------------------------------------------------
+      - name: Test Evolution API – create instance
+        run: |
+          docker exec -i chatwoot_rails ruby - <<'RUBY'
+          require 'net/http'
+          require 'json'
+
+          uri = URI('http://evolution-api:8080/instance/create')
+          req = Net::HTTP::Post.new(uri)
+          req['Content-Type'] = 'application/json'
+          req['apikey']       = 'ci-evolution-api-key'
+          req.body = { instanceName: 'testco',
+                       integration:  'WHATSAPP-BAILEYS',
+                       qrcode:       false }.to_json
+
+          res = Net::HTTP.start(uri.host, uri.port) { |h| h.request(req) }
+
+          puts "HTTP status : #{res.code}"
+          puts "Response body: #{res.body}"
+
+          abort("Expected HTTP 201, got #{res.code} — body: #{res.body}") \
+            unless res.code == '201'
+          abort('Response missing instanceName:testco') \
+            unless res.body.include?('testco')
+
+          puts "✔ Evolution API instance 'testco' created successfully"
+          RUBY
+
+      # -----------------------------------------------------------------------
+      # Debug: dump container logs on any failure
+      # -----------------------------------------------------------------------
+      - name: Dump container logs
+        if: failure()
+        run: |
+          echo "=== chatwoot_rails ===" && docker logs chatwoot_rails 2>&1 | tail -50 || true
+          echo "=== evolution_api ===" && docker logs evolution_api 2>&1 | tail -50 || true
+          echo "=== chatwoot_traefik ===" && docker logs chatwoot_traefik 2>&1 | tail -20 || true
 
       # -----------------------------------------------------------------------
       # Tear down
@@ -92,4 +199,3 @@ jobs:
       - name: Tear down
         if: always()
         run: docker compose -f docker-compose.yml -f docker-compose.ci.yml down -v
-

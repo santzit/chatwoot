@@ -1,20 +1,27 @@
 # =============================================================================
 # docker-compose.ci.yml  –  CI-only override (v0.2x)
 #
-# Publishes the Rails port 3000 to the host runner so CI tests can reach
-# the application directly at http://localhost:3000 without Traefik.
+# All readiness checks and API tests run inside the chatwoot_rails container
+# over the Docker network (service names: rails, evolution-api, etc.).
+# No host port bindings are needed — they would rely on Traefik routing that
+# is not set up in the ephemeral CI environment.
 #
 # Usage (CI only — do NOT use in production):
-#   docker compose -f docker-compose.yml -f docker-compose.ci.yml up -d rails sidekiq
+#   docker compose -f docker-compose.yml -f docker-compose.ci.yml up -d
 # =============================================================================
 
 services:
   rails:
-    ports:
-      - "3000:3000"
     environment:
-      - FRONTEND_URL=http://localhost:3000
+      - FRONTEND_URL=http://rails:3000
 
   sidekiq:
+    # In CI, skip db:chatwoot_prepare to prevent the race condition where both
+    # rails and sidekiq run the migration concurrently and the parallel
+    # CREATE EXTENSION calls trigger a UniqueViolation on pg_extension_name_index
+    # (pg_stat_statements), crashing rails into an infinite restart loop.
+    # Rails alone is responsible for running migrations in CI.
+    command:
+      - "exec bundle exec sidekiq -C config/sidekiq.yml"
     environment:
-      - FRONTEND_URL=http://localhost:3000
+      - FRONTEND_URL=http://rails:3000

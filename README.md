@@ -8,7 +8,8 @@ Internet
     ▼
 Traefik  (ports 80 / 443, automatic TLS via Let's Encrypt)
     │
-    └── app.chat.yourdomain.com  →  chatwoot_rails (Rails web server)
+    ├── app.chat.yourdomain.com  →  chatwoot_rails (Rails web server)
+    └── evo.chat.yourdomain.com  →  evolution_api  (Evolution API)
 
 Shared network (chatwoot-net)
     ├── chatwoot_sidekiq   (Sidekiq background worker)
@@ -27,6 +28,7 @@ Shared network (chatwoot-net)
 | `chatwoot_redis` | `redis:alpine` | Cache and Sidekiq job queues |
 | `chatwoot_rails` | `chatwoot/chatwoot:latest` | Rails web server (runs DB migrations on start) |
 | `chatwoot_sidekiq` | `chatwoot/chatwoot:latest` | Sidekiq background worker |
+| `evolution_api` | `evoapicloud/evolution-api:v2.3.6` | WhatsApp gateway (Evolution API) |
 
 **Environment files:**
 
@@ -34,6 +36,7 @@ Shared network (chatwoot-net)
 |---|---|
 | `.env` | Shared infra: domain, ACME e-mail, Postgres and Redis credentials |
 | `chatwoot.env` | Chatwoot application vars (secrets, DB, Redis, SMTP) |
+| `evolution.env` | Evolution API vars (API key, Chatwoot integration flag) |
 
 ---
 
@@ -44,6 +47,7 @@ Shared network (chatwoot-net)
 | Ubuntu 22.04 or 24.04 LTS | Other Linux distros work |
 | Docker >= 24 + Docker Compose v2 | `curl -fsSL https://get.docker.com \| sh` |
 | A DNS A record for the app subdomain | e.g. `app.chat.yourdomain.com -> <server-ip>` |
+| A DNS A record for the evo subdomain | e.g. `evo.chat.yourdomain.com -> <server-ip>` |
 | Ports 80 and 443 open | Required by Traefik and the ACME HTTP-01 challenge |
 
 ---
@@ -121,7 +125,26 @@ MAILER_SENDER_EMAIL=support@yourdomain.com
 
 ---
 
-### 4. Create acme.json (TLS certificate storage)
+### 4. Configure evolution.env (Evolution API)
+
+```bash
+cp evolution.env.example evolution.env
+chmod 600 evolution.env
+```
+
+Edit `evolution.env` and set the API key:
+
+```env
+AUTHENTICATION_API_KEY=<strong-random-key>   # openssl rand -hex 32
+```
+
+Instances are persisted in the `evolution_instances` Docker volume — no external database or Redis is required. `SERVER_URL` is injected automatically by `docker-compose.yml` as `https://evo.<DOMAIN>`.
+
+> ℹ️ The `evo.<DOMAIN>` DNS A record must point to this server before starting the stack so Traefik can issue a TLS certificate.
+
+---
+
+### 5. Create acme.json (TLS certificate storage)
 
 ```bash
 install -m 600 /dev/null acme.json
@@ -129,7 +152,7 @@ install -m 600 /dev/null acme.json
 
 ---
 
-### 5. Start all services
+### 6. Start all services
 
 ```bash
 docker compose up -d
@@ -137,7 +160,7 @@ docker compose up -d
 
 ---
 
-### 6. Run database migrations (first-time setup only)
+### 7. Run database migrations (first-time setup only)
 
 On the very first deploy, you must initialise the database schema explicitly:
 
@@ -176,6 +199,9 @@ docker compose logs -f rails
 # Sidekiq background worker
 docker compose logs -f sidekiq
 
+# Evolution API
+docker compose logs -f evolution-api
+
 # Postgres / Redis
 docker compose logs -f postgres
 docker compose logs -f redis
@@ -192,6 +218,7 @@ docker exec -it chatwoot_rails bundle exec rails console
 ```bash
 docker compose restart rails
 docker compose restart sidekiq
+docker compose restart evolution-api
 ```
 
 ### Service status
@@ -316,7 +343,7 @@ docker compose up -d
 
 ### TLS certificate not issued
 
-1. Confirm DNS has propagated: `dig app.chat.yourdomain.com`
+1. Confirm DNS has propagated: `dig app.chat.yourdomain.com` and `dig evo.chat.yourdomain.com`
 2. Confirm port 80 is reachable from the internet.
 3. Check Traefik logs: `docker compose logs traefik | grep -i acme`
 
@@ -332,10 +359,11 @@ docker compose restart rails sidekiq
 
 ## Security notes
 
-- `.env` and `chatwoot.env` are listed in `.gitignore` — never commit them.
+- `.env`, `chatwoot.env`, and `evolution.env` are listed in `.gitignore` — never commit them.
 - `acme.json` is also gitignored — it contains your TLS private keys.
 - Generate unique cryptographic secrets for each deployment.
 - PostgreSQL and Redis have **no published ports** — accessible only inside `chatwoot-net`.
+- Evolution API has **no published ports** — exposed only via Traefik at `https://evo.<DOMAIN>`.
 - Traefik only routes containers carrying the `traefik.enable=true` label.
 
 ---
@@ -370,3 +398,11 @@ docker compose restart rails sidekiq
 | `SMTP_USERNAME` | ✅ | SMTP username |
 | `SMTP_PASSWORD` | ✅ | SMTP password |
 | `MAILER_SENDER_EMAIL` | ✅ | Sender address for outbound e-mails |
+
+### evolution.env
+
+| Variable | Required | Description |
+|---|---|---|
+| `AUTHENTICATION_API_KEY` | ✅ | Master API key for Evolution API (`openssl rand -hex 32`) |
+| `CHATWOOT_ENABLED` | ✅ | Must be `true` to enable Chatwoot integration |
+| `DEL_INSTANCE` | ✅ | Set to `false` to keep instances alive across restarts |
