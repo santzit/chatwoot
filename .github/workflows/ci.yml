@@ -117,7 +117,7 @@ jobs:
       - name: Save Docker images to cache
         if: steps.docker-cache.outputs.cache-hit != 'true'
         run: |
-          docker compose config --images \
+          docker compose config --images postgres redis rails evolution-api \
             | xargs docker save -o /tmp/docker-images.tar
 
       # -----------------------------------------------------------------------
