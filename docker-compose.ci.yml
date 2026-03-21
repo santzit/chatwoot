@@ -18,3 +18,7 @@ services:
   sidekiq:
     environment:
       - FRONTEND_URL=http://localhost:3000
+
+  evolution-api:
+    ports:
+      - "8080:8080"

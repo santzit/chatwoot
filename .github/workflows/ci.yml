@@ -1,10 +1,11 @@
 # =============================================================================
 # .github/workflows/ci.yml  –  Chatwoot stack CI (v0.2x)
 #
-# Starts postgres + redis + rails, waits for the Rails API and DB to be ready.
-# User creation is deferred to a later phase.
+# Starts postgres + redis + rails + evolution-api, waits for both services,
+# then runs a smoke test against the Evolution API instance-create endpoint.
 #
-# All HTTP calls hit http://localhost:3000 directly (no Traefik, no TLS).
+# All HTTP calls hit http://localhost:3000 / http://localhost:8080 directly
+# (no Traefik, no TLS).
 # =============================================================================
 
 name: CI
@@ -58,18 +59,19 @@ jobs:
             > chatwoot.env
           chmod 600 chatwoot.env
 
+          # Use a fixed key so CI test steps can reference it via the env var below.
           printf '%s\n' \
-            "AUTHENTICATION_API_KEY=$(openssl rand -hex 32)" \
+            'AUTHENTICATION_API_KEY=ci-evolution-api-key' \
             'CHATWOOT_ENABLED=true' \
             'DEL_INSTANCE=false' \
             > evolution.env
           chmod 600 evolution.env
 
       # -----------------------------------------------------------------------
-      # 2. Start postgres + redis + rails  (sidekiq not needed for this test)
+      # 2. Start postgres + redis + rails + evolution-api
       # -----------------------------------------------------------------------
       - name: Start stack
-        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml up -d rails
+        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml up -d rails evolution-api
 
       # -----------------------------------------------------------------------
       # 3. Wait for Chatwoot to be ready
@@ -92,6 +94,56 @@ jobs:
             sleep 15
           done
           echo "✔ Chatwoot DB is ready"
+
+      # -----------------------------------------------------------------------
+      # 4. Wait for Evolution API to be ready
+      # -----------------------------------------------------------------------
+      - name: Wait for Evolution API
+        timeout-minutes: 3
+        run: |
+          until curl -sf http://localhost:8080/ > /dev/null 2>&1; do
+            echo "Waiting for Evolution API..."
+            sleep 5
+          done
+          echo "✔ Evolution API is ready"
+
+      # -----------------------------------------------------------------------
+      # 5. Test Evolution API – create "testco" instance
+      #
+      # Uses the fixed API key written to evolution.env above.
+      # Expects HTTP 201 and a JSON body containing "instanceName":"testco".
+      # -----------------------------------------------------------------------
+      - name: Test Evolution API – create instance
+        env:
+          EVO_API_KEY: ci-evolution-api-key
+        run: |
+          RESPONSE=$(curl -s -w '\n%{http_code}' \
+            -X POST http://localhost:8080/instance/create \
+            -H "Content-Type: application/json" \
+            -H "apikey: ${EVO_API_KEY}" \
+            -d '{
+              "instanceName": "testco",
+              "integration": "WHATSAPP-BAILEYS",
+              "qrcode": false
+            }')
+
+          HTTP_STATUS=$(echo "$RESPONSE" | tail -n1)
+          BODY=$(echo "$RESPONSE" | head -n -1)
+
+          echo "HTTP status : ${HTTP_STATUS}"
+          echo "Response body: ${BODY}"
+
+          if [ "$HTTP_STATUS" != "201" ]; then
+            echo "✘ Expected HTTP 201, got ${HTTP_STATUS}"
+            exit 1
+          fi
+
+          if ! echo "$BODY" | grep -q '"instanceName".*"testco"'; then
+            echo "✘ Response body does not contain instanceName:testco"
+            exit 1
+          fi
+
+          echo "✔ Evolution API instance 'testco' created successfully"
 
       # -----------------------------------------------------------------------
       # Tear down
