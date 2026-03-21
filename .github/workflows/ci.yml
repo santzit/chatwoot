@@ -2,11 +2,12 @@
 # .github/workflows/ci.yml  –  Chatwoot stack CI (v0.2x)
 #
 # Starts the full stack (traefik + postgres + redis + rails + sidekiq +
-# evolution-api), waits for Rails and Evolution API to be ready, then runs
-# a smoke test against the Evolution API instance-create endpoint.
+# evolution-api).  All readiness checks and API tests run INSIDE the
+# chatwoot_rails container over the Docker network — no host port bindings
+# or Traefik routing required.
 #
-# All HTTP calls hit http://localhost:3000 / http://localhost:8080 directly
-# (no Traefik, no TLS).
+# Docker images are cached between runs (keyed by docker-compose.yml hash)
+# to speed up cold starts.
 # =============================================================================
 
 name: CI
@@ -60,7 +61,7 @@ jobs:
             > chatwoot.env
           chmod 600 chatwoot.env
 
-          # Use a fixed key so CI test steps can reference it via the env var below.
+          # Use a fixed key so CI test steps can reference it in rails runner.
           printf '%s\n' \
             'AUTHENTICATION_API_KEY=ci-evolution-api-key' \
             'CHATWOOT_ENABLED=true' \
@@ -69,86 +70,135 @@ jobs:
           chmod 600 evolution.env
 
       # -----------------------------------------------------------------------
-      # 2. Start full stack (traefik + postgres + redis + rails + sidekiq + evolution-api)
+      # 2. Docker image cache
+      #
+      # Cache all pulled images as a tar archive keyed by docker-compose.yml.
+      # On a cache hit, "docker load" pre-populates the daemon so "up -d" is
+      # near-instant.  On a miss, images are pulled during "up -d", then saved
+      # for the next run.  Traefik is omitted from the save to reduce size.
+      # -----------------------------------------------------------------------
+      - name: Restore Docker image cache
+        id: docker-cache
+        uses: actions/cache@v4
+        with:
+          path: /tmp/docker-images.tar
+          key: docker-images-${{ runner.os }}-${{ hashFiles('docker-compose.yml') }}
+
+      - name: Load cached Docker images
+        if: steps.docker-cache.outputs.cache-hit == 'true'
+        run: docker load -i /tmp/docker-images.tar
+
+      # -----------------------------------------------------------------------
+      # 3. Start full stack
       # -----------------------------------------------------------------------
       - name: Start stack
         run: docker compose -f docker-compose.yml -f docker-compose.ci.yml up -d
 
       # -----------------------------------------------------------------------
-      # 3. Wait for Chatwoot to be ready
+      # Save images on first pull (cache miss only)
       #
-      # Two-phase wait:
-      #   a) HTTP: /auth/sign_in returns 200 (proves Rails is up)
-      #   b) DB:   rails runner "Account.count" succeeds (proves schema is ready)
+      # Uses "docker compose config --images" to derive the image list
+      # dynamically from docker-compose.yml so this step never drifts out of
+      # sync when image versions are bumped.
+      # -----------------------------------------------------------------------
+      - name: Save Docker images to cache
+        if: steps.docker-cache.outputs.cache-hit != 'true'
+        run: |
+          docker compose -f docker-compose.yml config --images \
+            | xargs docker save -o /tmp/docker-images.tar
+
+      # -----------------------------------------------------------------------
+      # 4. Wait for Chatwoot to be ready
+      #
+      # All checks run INSIDE the chatwoot_rails container over the Docker
+      # network — no host port binding required.
+      #
+      # Three-phase wait:
+      #   a) TCP:  port 3000 accepts connections (container-local localhost)
+      #   b) HTTP: /auth/sign_in returns 200 (Rails is serving requests)
+      #   c) DB:   rails runner "Account.count" succeeds (schema is applied)
       # -----------------------------------------------------------------------
       - name: Wait for Chatwoot
         timeout-minutes: 8
         run: |
-          until curl -sf http://localhost:3000/auth/sign_in > /dev/null 2>&1; do
+          until docker exec chatwoot_rails nc -z localhost 3000 2>/dev/null; do
+            echo "Waiting for Chatwoot TCP..."
+            sleep 5
+          done
+          echo "✔ Chatwoot TCP is ready"
+
+          until docker exec chatwoot_rails wget -qO /dev/null \
+              http://localhost:3000/auth/sign_in 2>/dev/null; do
             echo "Waiting for Chatwoot HTTP..."
             sleep 10
           done
           echo "✔ Chatwoot HTTP is ready"
 
-          until docker exec chatwoot_rails bundle exec rails runner "Account.count" > /dev/null 2>&1; do
-            echo "Waiting for DB migrations to complete..."
+          until docker exec chatwoot_rails bundle exec rails runner \
+              "Account.count" > /dev/null 2>&1; do
+            echo "Waiting for DB migrations..."
             sleep 15
           done
           echo "✔ Chatwoot DB is ready"
 
       # -----------------------------------------------------------------------
-      # 4. Wait for Evolution API to be ready
+      # 5. Wait for Evolution API to be ready
       #
-      # Uses curl without -f so any HTTP response (including 4xx/redirects)
-      # counts as "server is up". Connection refused returns curl exit code 7
-      # which keeps the loop running.
+      # TCP check runs inside chatwoot_rails using the Docker network service
+      # name "evolution-api" — no host port binding required.
       # -----------------------------------------------------------------------
       - name: Wait for Evolution API
         timeout-minutes: 5
         run: |
-          until curl -so /dev/null http://localhost:8080/ 2>/dev/null; do
+          until docker exec chatwoot_rails nc -z evolution-api 8080 2>/dev/null; do
             echo "Waiting for Evolution API..."
             sleep 5
           done
           echo "✔ Evolution API is ready"
 
       # -----------------------------------------------------------------------
-      # 5. Test Evolution API – create "testco" instance
+      # 6. Test Evolution API – create "testco" instance
       #
-      # Uses the fixed API key written to evolution.env above.
+      # HTTP POST runs inside chatwoot_rails via ruby (stdlib Net::HTTP), calling
+      # evolution-api:8080 over the Docker network.
       # Expects HTTP 201 and a JSON body containing "instanceName":"testco".
       # -----------------------------------------------------------------------
       - name: Test Evolution API – create instance
-        env:
-          EVO_API_KEY: ci-evolution-api-key
         run: |
-          RESPONSE=$(curl -s -w '\n%{http_code}' \
-            -X POST http://localhost:8080/instance/create \
-            -H "Content-Type: application/json" \
-            -H "apikey: ${EVO_API_KEY}" \
-            -d '{
-              "instanceName": "testco",
-              "integration": "WHATSAPP-BAILEYS",
-              "qrcode": false
-            }')
+          docker exec -i chatwoot_rails ruby - <<'RUBY'
+          require 'net/http'
+          require 'json'
 
-          HTTP_STATUS=$(echo "$RESPONSE" | tail -n1)
-          BODY=$(echo "$RESPONSE" | head -n -1)
+          uri = URI('http://evolution-api:8080/instance/create')
+          req = Net::HTTP::Post.new(uri)
+          req['Content-Type'] = 'application/json'
+          req['apikey']       = 'ci-evolution-api-key'
+          req.body = { instanceName: 'testco',
+                       integration:  'WHATSAPP-BAILEYS',
+                       qrcode:       false }.to_json
 
-          echo "HTTP status : ${HTTP_STATUS}"
-          echo "Response body: ${BODY}"
+          res = Net::HTTP.start(uri.host, uri.port) { |h| h.request(req) }
 
-          if [ "$HTTP_STATUS" != "201" ]; then
-            echo "✘ Expected HTTP 201, got ${HTTP_STATUS}"
-            exit 1
-          fi
+          puts "HTTP status : #{res.code}"
+          puts "Response body: #{res.body}"
 
-          if ! echo "$BODY" | grep -q '"instanceName".*"testco"'; then
-            echo "✘ Response body does not contain instanceName:testco"
-            exit 1
-          fi
+          abort("Expected HTTP 201, got #{res.code} — body: #{res.body}") \
+            unless res.code == '201'
+          abort('Response missing instanceName:testco') \
+            unless res.body.include?('testco')
 
-          echo "✔ Evolution API instance 'testco' created successfully"
+          puts "✔ Evolution API instance 'testco' created successfully"
+          RUBY
+
+      # -----------------------------------------------------------------------
+      # Debug: dump container logs on any failure
+      # -----------------------------------------------------------------------
+      - name: Dump container logs
+        if: failure()
+        run: |
+          echo "=== chatwoot_rails ===" && docker logs chatwoot_rails 2>&1 | tail -50 || true
+          echo "=== evolution_api ===" && docker logs evolution_api 2>&1 | tail -50 || true
+          echo "=== chatwoot_traefik ===" && docker logs chatwoot_traefik 2>&1 | tail -20 || true
 
       # -----------------------------------------------------------------------
       # Tear down
@@ -156,4 +206,3 @@ jobs:
       - name: Tear down
         if: always()
         run: docker compose -f docker-compose.yml -f docker-compose.ci.yml down -v
-
