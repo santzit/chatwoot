@@ -97,11 +97,15 @@ jobs:
 
       # -----------------------------------------------------------------------
       # 4. Wait for Evolution API to be ready
+      #
+      # Uses curl without -f so any HTTP response (including 4xx/redirects)
+      # counts as "server is up". Connection refused returns curl exit code 7
+      # which keeps the loop running.
       # -----------------------------------------------------------------------
       - name: Wait for Evolution API
-        timeout-minutes: 3
+        timeout-minutes: 5
         run: |
-          until curl -sf http://localhost:8080/ > /dev/null 2>&1; do
+          until curl -so /dev/null http://localhost:8080/ 2>/dev/null; do
             echo "Waiting for Evolution API..."
             sleep 5
           done
