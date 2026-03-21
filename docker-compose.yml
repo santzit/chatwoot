@@ -167,8 +167,9 @@ services:
   # Evolution API  –  WhatsApp gateway / messaging integration
   #
   # Exposes the Evolution API at https://evo.<DOMAIN> via Traefik.
-  # Instances are stored in the evolution_instances volume (no DB or Redis).
-  # Copy evolution.env.example → evolution.env and set AUTHENTICATION_API_KEY.
+  # Uses the shared chatwoot postgres (evolution_api schema) — no new
+  # database container required.
+  # Copy evolution.env.example → evolution.env and fill in all values.
   # ---------------------------------------------------------------------------
   evolution-api:
     image: evoapicloud/evolution-api:v2.3.6
@@ -176,6 +177,9 @@ services:
     restart: always
     networks:
       - chatwoot-net
+    depends_on:
+      postgres:
+        condition: service_healthy
     env_file: evolution.env
     environment:
       - SERVER_URL=https://evo.${DOMAIN}

@@ -62,13 +62,17 @@ jobs:
           chmod 600 chatwoot.env
 
           # Use a fixed key so CI test steps can reference it in rails runner.
-          # DATABASE_ENABLED=false: Evolution API v2.x requires this to run
-          # without an external database (instances stored in the filesystem).
+          # Evolution API v2 always requires PostgreSQL — point it at the
+          # shared chatwoot postgres using a separate schema (evolution_api).
           printf '%s\n' \
             'AUTHENTICATION_API_KEY=ci-evolution-api-key' \
             'CHATWOOT_ENABLED=true' \
             'DEL_INSTANCE=false' \
-            'DATABASE_ENABLED=false' \
+            'DATABASE_PROVIDER=postgresql' \
+            'DATABASE_CONNECTION_URI=postgresql://chatwoot:testpass@postgres:5432/chatwoot_production?schema=evolution_api' \
+            'DATABASE_CONNECTION_CLIENT_NAME=evolution_api' \
+            'CACHE_REDIS_ENABLED=false' \
+            'CACHE_LOCAL_ENABLED=true' \
             > evolution.env
           chmod 600 evolution.env
 
