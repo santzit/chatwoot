@@ -62,10 +62,13 @@ jobs:
           chmod 600 chatwoot.env
 
           # Use a fixed key so CI test steps can reference it in rails runner.
+          # DATABASE_ENABLED=false: Evolution API v2.x requires this to run
+          # without an external database (instances stored in the filesystem).
           printf '%s\n' \
             'AUTHENTICATION_API_KEY=ci-evolution-api-key' \
             'CHATWOOT_ENABLED=true' \
             'DEL_INSTANCE=false' \
+            'DATABASE_ENABLED=false' \
             > evolution.env
           chmod 600 evolution.env
 
@@ -110,36 +113,22 @@ jobs:
       # -----------------------------------------------------------------------
       # 4. Wait for Chatwoot to be ready
       #
-      # All checks run INSIDE the chatwoot_rails container over the Docker
-      # network — no host port binding required.
-      #
-      # Three-phase wait:
-      #   a) TCP:  port 3000 accepts connections (container-local localhost)
-      #   b) HTTP: /auth/sign_in returns 200 (Rails is serving requests)
-      #   c) DB:   rails runner "Account.count" succeeds (schema is applied)
+      # Runs "rails runner Account.count" inside chatwoot_rails — this is the
+      # most reliable check because it:
+      #   • loads the full Rails environment (proves Rails can boot)
+      #   • queries the DB (proves postgres is up and schema is migrated)
+      # It does NOT require Puma/HTTP since our tests call evolution-api
+      # directly via Net::HTTP, not through the rails web server.
       # -----------------------------------------------------------------------
       - name: Wait for Chatwoot
         timeout-minutes: 8
         run: |
-          until docker exec chatwoot_rails nc -z localhost 3000 2>/dev/null; do
-            echo "Waiting for Chatwoot TCP..."
-            sleep 5
-          done
-          echo "✔ Chatwoot TCP is ready"
-
-          until docker exec chatwoot_rails wget -qO /dev/null \
-              http://localhost:3000/auth/sign_in 2>/dev/null; do
-            echo "Waiting for Chatwoot HTTP..."
-            sleep 10
-          done
-          echo "✔ Chatwoot HTTP is ready"
-
           until docker exec chatwoot_rails bundle exec rails runner \
               "Account.count" > /dev/null 2>&1; do
-            echo "Waiting for DB migrations..."
-            sleep 15
+            echo "Waiting for Chatwoot (Rails env + DB)..."
+            sleep 10
           done
-          echo "✔ Chatwoot DB is ready"
+          echo "✔ Chatwoot is ready"
 
       # -----------------------------------------------------------------------
       # 5. Wait for Evolution API to be ready
