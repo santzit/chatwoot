@@ -113,7 +113,9 @@ jobs:
             sleep 10
           done
           echo "✔ Chatwoot (Rails env + DB) is ready"
-          until docker exec chatwoot_rails nc -z localhost 3000 2>/dev/null; do
+          until docker exec chatwoot_rails ruby -e \
+              "require 'socket'; Socket.tcp('localhost', 3000, connect_timeout: 2) { }" \
+              2>/dev/null; do
             echo "Waiting for Chatwoot web server (Puma)..."
             sleep 5
           done
@@ -172,7 +174,9 @@ jobs:
       - name: Wait for Evolution API
         timeout-minutes: 5
         run: |
-          until docker exec chatwoot_rails nc -z evolution-api 8080 2>/dev/null; do
+          until docker exec chatwoot_rails ruby -e \
+              "require 'socket'; Socket.tcp('evolution-api', 8080, connect_timeout: 2) { }" \
+              2>/dev/null; do
             echo "Waiting for Evolution API..."
             sleep 5
           done
@@ -218,9 +222,10 @@ jobs:
       - name: Dump container logs
         if: failure()
         run: |
-          echo "=== chatwoot_rails ===" && docker logs chatwoot_rails 2>&1 | tail -50 || true
+          echo "=== chatwoot_rails ===" && docker logs chatwoot_rails 2>&1 | tail -80 || true
+          echo "=== chatwoot_postgres ===" && docker logs chatwoot_postgres 2>&1 | tail -20 || true
+          echo "=== chatwoot_redis ===" && docker logs chatwoot_redis 2>&1 | tail -20 || true
           echo "=== evolution_api ===" && docker logs evolution_api 2>&1 | tail -50 || true
-          echo "=== chatwoot_traefik ===" && docker logs chatwoot_traefik 2>&1 | tail -20 || true
 
       # -----------------------------------------------------------------------
       # Tear down
