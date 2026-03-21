@@ -1,8 +1,9 @@
 # =============================================================================
 # .github/workflows/ci.yml  –  Chatwoot stack CI (v0.2x)
 #
-# Starts postgres + redis + rails + evolution-api, waits for both services,
-# then runs a smoke test against the Evolution API instance-create endpoint.
+# Starts the full stack (traefik + postgres + redis + rails + sidekiq +
+# evolution-api), waits for Rails and Evolution API to be ready, then runs
+# a smoke test against the Evolution API instance-create endpoint.
 #
 # All HTTP calls hit http://localhost:3000 / http://localhost:8080 directly
 # (no Traefik, no TLS).
@@ -68,10 +69,10 @@ jobs:
           chmod 600 evolution.env
 
       # -----------------------------------------------------------------------
-      # 2. Start postgres + redis + rails + evolution-api
+      # 2. Start full stack (traefik + postgres + redis + rails + sidekiq + evolution-api)
       # -----------------------------------------------------------------------
       - name: Start stack
-        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml up -d rails evolution-api
+        run: docker compose -f docker-compose.yml -f docker-compose.ci.yml up -d
 
       # -----------------------------------------------------------------------
       # 3. Wait for Chatwoot to be ready
