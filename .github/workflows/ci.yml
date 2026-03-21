@@ -39,43 +39,19 @@ jobs:
       # -----------------------------------------------------------------------
       # 1. Generate env files from examples
       #
-      # Copy each *.example file and substitute placeholder values with
-      # CI-specific values using sed — this exercises the same templates
-      # an operator would use on a real deployment.
+      # All CI-appropriate values (credentials, domain, crypto keys) are already
+      # set in the example files. CI just copies them — no substitution needed.
       # -----------------------------------------------------------------------
       - name: Generate env files
         run: |
-          # .env — infrastructure credentials
+          # Copy example env files directly — all CI-appropriate values are
+          # already set in the examples (testpass/testredis credentials,
+          # localhost domain, pre-filled crypto keys).
           cp .env.example .env
-          sed -i 's|DOMAIN=.*|DOMAIN=localhost|' .env
-          sed -i 's|ACME_EMAIL=.*|ACME_EMAIL=ci@example.org|' .env
-          sed -i 's|POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=testpass|' .env
-          sed -i 's|REDIS_PASSWORD=.*|REDIS_PASSWORD=testredis|' .env
           install -m 600 /dev/null acme.json
-
-          # chatwoot.env — application secrets
           cp chatwoot.env.example chatwoot.env
-          skb=$(openssl rand -hex 64)
-          arde=$(openssl rand -hex 32)
-          arks=$(openssl rand -hex 32)
-          arp=$(openssl rand -hex 32)
-          sed -i "s/CHANGE_ME_SECRET_KEY_BASE/${skb}/" chatwoot.env
-          sed -i "s/CHANGE_ME_DETERMINISTIC_KEY/${arde}/" chatwoot.env
-          sed -i "s/CHANGE_ME_DERIVATION_SALT/${arks}/" chatwoot.env
-          sed -i "s/CHANGE_ME_PRIMARY_KEY/${arp}/" chatwoot.env
-          sed -i 's/CHANGE_ME_SAME_AS_ENV_POSTGRES_USER/chatwoot/' chatwoot.env
-          sed -i 's/CHANGE_ME_SAME_AS_ENV_POSTGRES_PASSWORD/testpass/' chatwoot.env
-          sed -i 's/CHANGE_ME_SAME_AS_ENV_REDIS_PASSWORD/testredis/' chatwoot.env
-          sed -i 's/SMTP_ADDRESS=.*/SMTP_ADDRESS=localhost/' chatwoot.env
-          sed -i 's/SMTP_PORT=.*/SMTP_PORT=1025/' chatwoot.env
           chmod 600 chatwoot.env
-
-          # evolution.env — Evolution API config (uses same postgres + redis)
           cp evolution.env.example evolution.env
-          sed -i 's|AUTHENTICATION_API_KEY=.*|AUTHENTICATION_API_KEY=ci-evolution-api-key|' evolution.env
-          evo_db='postgresql://chatwoot:testpass@postgres:5432/chatwoot_production?schema=evolution_api'
-          sed -i "s|DATABASE_CONNECTION_URI=.*|DATABASE_CONNECTION_URI=${evo_db}|" evolution.env
-          sed -i 's|CACHE_REDIS_URI=.*|CACHE_REDIS_URI=redis://:testredis@redis:6379/1|' evolution.env
           chmod 600 evolution.env
 
       # -----------------------------------------------------------------------
@@ -198,7 +174,7 @@ jobs:
           uri = URI('http://evolution-api:8080/instance/create')
           req = Net::HTTP::Post.new(uri)
           req['Content-Type'] = 'application/json'
-          req['apikey']       = 'ci-evolution-api-key'
+          req['apikey']       = 'changeme-evolution-api-key'
           req.body = { instanceName: 'testco',
                        integration:  'WHATSAPP-BAILEYS',
                        qrcode:       false }.to_json
