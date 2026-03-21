@@ -12,8 +12,8 @@
 # Env files are derived from the *.example files using sed so that CI always
 # exercises the same template the operator uses on a real deployment.
 #
-# Docker images are cached between runs (keyed by docker-compose.yml hash)
-# to speed up cold starts.
+# Docker images are pulled via "docker compose pull" which uses Docker's own
+# layer cache to skip re-downloading unchanged layers.
 # =============================================================================
 
 name: CI
@@ -79,23 +79,13 @@ jobs:
           chmod 600 evolution.env
 
       # -----------------------------------------------------------------------
-      # 2. Docker image cache
+      # 2. Pull images
       #
-      # Cache all pulled images as a tar archive keyed by docker-compose.yml.
-      # On a cache hit, "docker load" pre-populates the daemon so "up -d" is
-      # near-instant.  On a miss, images are pulled during "up -d", then saved
-      # for the next run.  Traefik is omitted from the save to reduce size.
+      # Pre-pull all CI service images so Docker's layer cache can skip
+      # unchanged layers on subsequent runs.
       # -----------------------------------------------------------------------
-      - name: Restore Docker image cache
-        id: docker-cache
-        uses: actions/cache@v4
-        with:
-          path: /tmp/docker-images.tar
-          key: docker-images-${{ runner.os }}-${{ hashFiles('docker-compose.yml') }}
-
-      - name: Load cached Docker images
-        if: steps.docker-cache.outputs.cache-hit == 'true'
-        run: docker load -i /tmp/docker-images.tar
+      - name: Pull images
+        run: docker compose pull postgres redis rails evolution-api
 
       # -----------------------------------------------------------------------
       # 3. Start stack (CI subset)
@@ -108,27 +98,11 @@ jobs:
         run: docker compose up -d postgres redis rails evolution-api
 
       # -----------------------------------------------------------------------
-      # Save images on first pull (cache miss only)
-      #
-      # Uses "docker compose config --images" to derive the image list
-      # dynamically from docker-compose.yml so this step never drifts out of
-      # sync when image versions are bumped.
-      # -----------------------------------------------------------------------
-      - name: Save Docker images to cache
-        if: steps.docker-cache.outputs.cache-hit != 'true'
-        run: |
-          docker compose config --images postgres redis rails evolution-api \
-            | xargs docker save -o /tmp/docker-images.tar
-
-      # -----------------------------------------------------------------------
       # 4. Wait for Chatwoot to be ready
       #
-      # Runs "rails runner Account.count" inside chatwoot_rails — this is the
-      # most reliable check because it:
-      #   • loads the full Rails environment (proves Rails can boot)
-      #   • queries the DB (proves postgres is up and schema is migrated)
-      # It does NOT require Puma/HTTP since our tests call evolution-api
-      # directly via Net::HTTP, not through the rails web server.
+      # First waits for the Rails environment + DB (via rails runner), then
+      # waits for the Puma web server to accept TCP connections on port 3000 —
+      # both are required before the Chatwoot API tests can run.
       # -----------------------------------------------------------------------
       - name: Wait for Chatwoot
         timeout-minutes: 8
@@ -138,10 +112,59 @@ jobs:
             echo "Waiting for Chatwoot (Rails env + DB)..."
             sleep 10
           done
-          echo "✔ Chatwoot is ready"
+          echo "✔ Chatwoot (Rails env + DB) is ready"
+          until docker exec chatwoot_rails nc -z localhost 3000 2>/dev/null; do
+            echo "Waiting for Chatwoot web server (Puma)..."
+            sleep 5
+          done
+          echo "✔ Chatwoot web server is ready"
 
       # -----------------------------------------------------------------------
-      # 5. Wait for Evolution API to be ready
+      # 5. Bootstrap Chatwoot – create account and verify users
+      #
+      # Creates a "testco" Chatwoot account, then uses the Platform API to
+      # create two users and confirms the responses — proving Rails, Puma,
+      # and the database are all fully operational.
+      # -----------------------------------------------------------------------
+      - name: Bootstrap Chatwoot – create account and users
+        run: |
+          docker exec -i chatwoot_rails bundle exec rails runner - <<'RUBY'
+          require 'net/http'
+          require 'json'
+
+          # Create the test account
+          account = Account.create!(name: 'testco')
+          puts "✔ Account 'testco' created (id=#{account.id})"
+
+          # Create a PlatformApp to obtain a platform API token
+          platform_app = PlatformApp.create!(name: 'CI App')
+          token = platform_app.access_token.token
+          puts "✔ Platform token obtained"
+
+          # Create two users via the Chatwoot Platform API
+          [
+            { name: 'CI User 1', email: 'ci-user-1@example.org', password: 'Password123!' },
+            { name: 'CI User 2', email: 'ci-user-2@example.org', password: 'Password123!' }
+          ].each_with_index do |attrs, i|
+            uri = URI('http://localhost:3000/platform/api/v1/users')
+            req = Net::HTTP::Post.new(uri)
+            req['Content-Type']      = 'application/json'
+            req['api_access_token']  = token
+            req.body = attrs.to_json
+
+            res = Net::HTTP.start(uri.host, uri.port) { |h| h.request(req) }
+            unless res.code == '200'
+              abort("Failed to create user #{i + 1}: HTTP #{res.code} — #{res.body}")
+            end
+            user_data = JSON.parse(res.body)
+            puts "✔ User #{i + 1} created: #{user_data['email']} (id=#{user_data['id']})"
+          end
+
+          puts "✔ All Chatwoot assertions passed"
+          RUBY
+
+      # -----------------------------------------------------------------------
+      # 6. Wait for Evolution API to be ready
       #
       # TCP check runs inside chatwoot_rails using the Docker network service
       # name "evolution-api" — no host port binding required.
@@ -156,7 +179,7 @@ jobs:
           echo "✔ Evolution API is ready"
 
       # -----------------------------------------------------------------------
-      # 6. Test Evolution API – create "testco" instance
+      # 7. Test Evolution API – create "testco" instance
       #
       # HTTP POST runs inside chatwoot_rails via ruby (stdlib Net::HTTP), calling
       # evolution-api:8080 over the Docker network.
