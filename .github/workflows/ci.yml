@@ -76,9 +76,15 @@ jobs:
       #
       # Pre-pull all CI service images so Docker's layer cache can skip
       # unchanged layers on subsequent runs.
+      #
+      # tata-agent is excluded: ghcr.io/santzit/tata-customer-agent is a
+      # private package in a different repository; the workflow GITHUB_TOKEN
+      # (scoped to santzit/chatwoot) is denied pull access even with packages:read.
+      # The agent-bot API test (step 9) validates Chatwoot bot registration
+      # without requiring the tata-agent container to be running.
       # -----------------------------------------------------------------------
       - name: Pull images
-        run: docker compose pull postgres redis rails evolution-api tata-agent
+        run: docker compose pull postgres redis rails evolution-api
 
       # -----------------------------------------------------------------------
       # 3. Start stack (CI subset)
@@ -86,9 +92,10 @@ jobs:
       # Traefik is omitted — it requires ports 80/443 not available on GitHub
       # runners.  Sidekiq is omitted — running db:chatwoot_prepare concurrently
       # with rails causes a UniqueViolation crash loop on pg_stat_statements.
+      # tata-agent is omitted — private image not accessible to the CI token.
       # -----------------------------------------------------------------------
       - name: Start stack
-        run: docker compose up -d postgres redis rails evolution-api tata-agent
+        run: docker compose up -d postgres redis rails evolution-api
 
       # -----------------------------------------------------------------------
       # 4. Wait for Chatwoot to be ready
@@ -210,30 +217,15 @@ jobs:
           RUBY
 
       # -----------------------------------------------------------------------
-      # 8. Wait for Tata agent to be ready
-      #
-      # TCP check on port 8000 inside the Docker network.
-      # -----------------------------------------------------------------------
-      - name: Wait for Tata agent
-        timeout-minutes: 5
-        run: |
-          until docker exec chatwoot_rails ruby -e \
-              "require 'socket'; Socket.tcp('tata-agent', 8000, connect_timeout: 2) { }" \
-              2>/dev/null; do
-            echo "Waiting for Tata agent..."
-            sleep 5
-          done
-          echo "✔ Tata agent is ready"
-
-      # -----------------------------------------------------------------------
-      # 9. Test Chatwoot agent-bot API – create bot and reset access token
+      # 8. Test Chatwoot agent-bot API – create bot and reset access token
       #
       # Uses the Chatwoot Account API to:
       #   1. Create an agent bot pointing to the tata-agent webhook endpoint.
       #   2. Reset the bot access token and verify the response contains
       #      an "access_token" field.
-      # This proves the Chatwoot ↔ tata-agent integration is wired correctly
-      # without requiring a real OpenAI key or triggering an actual LLM call.
+      # This proves the Chatwoot bot-registration API is wired correctly.
+      # The tata-agent container is not started in CI (private image); Chatwoot
+      # only stores the outgoing_url and does not call it during registration.
       # -----------------------------------------------------------------------
       - name: Test agent-bot API – create bot and reset token
         run: |
@@ -304,7 +296,6 @@ jobs:
           echo "=== chatwoot_postgres ===" && docker logs chatwoot_postgres 2>&1 | tail -20 || true
           echo "=== chatwoot_redis ===" && docker logs chatwoot_redis 2>&1 | tail -20 || true
           echo "=== evolution_api ===" && docker logs evolution_api 2>&1 | tail -50 || true
-          echo "=== tata_agent ===" && docker logs tata_agent 2>&1 | tail -50 || true
 
       # -----------------------------------------------------------------------
       # Tear down
