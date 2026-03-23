@@ -26,7 +26,6 @@ on:
 
 permissions:
   contents: read
-  packages: read
 
 jobs:
 
@@ -36,25 +35,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-
-      # -----------------------------------------------------------------------
-      # 0. Authenticate with GitHub Container Registry
-      #
-      # ghcr.io/santzit/tata-customer-agent is a private package owned by the
-      # santzit/tata-customer-agent repository.  The automatic github.token is
-      # scoped to santzit/chatwoot and is denied access to packages from other
-      # repos, even with packages:read.
-      #
-      # A Personal Access Token (classic) with the "read:packages" scope must
-      # be created in the santzit GitHub account and stored as a repository
-      # secret named GHCR_PAT in santzit/chatwoot.
-      # -----------------------------------------------------------------------
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.repository_owner }}
-          password: ${{ secrets.GHCR_PAT }}
 
       # -----------------------------------------------------------------------
       # 1. Generate env files from examples
