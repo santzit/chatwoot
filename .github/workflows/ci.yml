@@ -26,6 +26,7 @@ on:
 
 permissions:
   contents: read
+  packages: read
 
 jobs:
 
@@ -35,6 +36,19 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      # -----------------------------------------------------------------------
+      # 0. Authenticate with GitHub Container Registry
+      #
+      # ghcr.io/santzit/tata-customer-agent is a private package — the runner
+      # must log in with GITHUB_TOKEN before it can pull the image.
+      # -----------------------------------------------------------------------
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       # -----------------------------------------------------------------------
       # 1. Generate env files from examples
