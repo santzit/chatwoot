@@ -53,6 +53,8 @@ jobs:
           chmod 600 chatwoot.env
           cp evolution.env.example evolution.env
           chmod 600 evolution.env
+          cp tata.env.example tata.env
+          chmod 600 tata.env
 
       # -----------------------------------------------------------------------
       # 2. Pull images
@@ -61,7 +63,7 @@ jobs:
       # unchanged layers on subsequent runs.
       # -----------------------------------------------------------------------
       - name: Pull images
-        run: docker compose pull postgres redis rails evolution-api
+        run: docker compose pull postgres redis rails evolution-api tata-agent
 
       # -----------------------------------------------------------------------
       # 3. Start stack (CI subset)
@@ -71,7 +73,7 @@ jobs:
       # with rails causes a UniqueViolation crash loop on pg_stat_statements.
       # -----------------------------------------------------------------------
       - name: Start stack
-        run: docker compose up -d postgres redis rails evolution-api
+        run: docker compose up -d postgres redis rails evolution-api tata-agent
 
       # -----------------------------------------------------------------------
       # 4. Wait for Chatwoot to be ready
@@ -193,6 +195,91 @@ jobs:
           RUBY
 
       # -----------------------------------------------------------------------
+      # 8. Wait for Tata agent to be ready
+      #
+      # TCP check on port 8000 inside the Docker network.
+      # -----------------------------------------------------------------------
+      - name: Wait for Tata agent
+        timeout-minutes: 5
+        run: |
+          until docker exec chatwoot_rails ruby -e \
+              "require 'socket'; Socket.tcp('tata-agent', 8000, connect_timeout: 2) { }" \
+              2>/dev/null; do
+            echo "Waiting for Tata agent..."
+            sleep 5
+          done
+          echo "✔ Tata agent is ready"
+
+      # -----------------------------------------------------------------------
+      # 9. Test Chatwoot agent-bot API – create bot and reset access token
+      #
+      # Uses the Chatwoot Account API to:
+      #   1. Create an agent bot pointing to the tata-agent webhook endpoint.
+      #   2. Reset the bot access token and verify the response contains
+      #      an "access_token" field.
+      # This proves the Chatwoot ↔ tata-agent integration is wired correctly
+      # without requiring a real OpenAI key or triggering an actual LLM call.
+      # -----------------------------------------------------------------------
+      - name: Test agent-bot API – create bot and reset token
+        run: |
+          docker exec -i chatwoot_rails bundle exec rails runner - <<'RUBY'
+          require 'net/http'
+          require 'json'
+
+          # Retrieve the first account (created in step 5)
+          account = Account.first
+          account_id = account.id
+
+          # Create a user token for account API access
+          user = account.users.first || begin
+            u = User.create!(
+              name:     'Bot Admin',
+              email:    'botadmin@example.org',
+              password: 'Password123!'
+            )
+            AccountUser.create!(account: account, user: u, role: :administrator)
+            u
+          end
+          api_token = user.access_token.token
+
+          # 1. Create an agent bot
+          uri = URI("http://localhost:3000/api/v1/accounts/#{account_id}/agent_bots")
+          req = Net::HTTP::Post.new(uri)
+          req['Content-Type']     = 'application/json'
+          req['api_access_token'] = api_token
+          req.body = {
+            name:         'Tata CI Bot',
+            description:  'CI test bot',
+            outgoing_url: 'http://tata-agent:8000/webhook',
+            bot_type:     'webhook',
+            bot_config:   {}
+          }.to_json
+
+          res = Net::HTTP.start(uri.host, uri.port) { |h| h.request(req) }
+          abort("Create bot failed: HTTP #{res.code} — #{res.body}") \
+            unless res.code == '200'
+          bot = JSON.parse(res.body)
+          bot_id = bot['id']
+          puts "✔ Agent bot created (id=#{bot_id}, name=#{bot['name']})"
+
+          # 2. Reset access token
+          uri2 = URI("http://localhost:3000/api/v1/accounts/#{account_id}/agent_bots/#{bot_id}/reset_access_token")
+          req2 = Net::HTTP::Post.new(uri2)
+          req2['Content-Type']     = 'application/json'
+          req2['api_access_token'] = api_token
+
+          res2 = Net::HTTP.start(uri2.host, uri2.port) { |h| h.request(req2) }
+          abort("Reset token failed: HTTP #{res2.code} — #{res2.body}") \
+            unless res2.code == '200'
+          token_data = JSON.parse(res2.body)
+          abort('Response missing access_token field') \
+            unless token_data.key?('access_token') && !token_data['access_token'].to_s.empty?
+          puts "✔ Agent bot access token reset (token=#{token_data['access_token'][0..7]}...)"
+
+          puts "✔ All agent-bot API assertions passed"
+          RUBY
+
+      # -----------------------------------------------------------------------
       # Debug: dump container logs on any failure
       # -----------------------------------------------------------------------
       - name: Dump container logs
@@ -202,6 +289,7 @@ jobs:
           echo "=== chatwoot_postgres ===" && docker logs chatwoot_postgres 2>&1 | tail -20 || true
           echo "=== chatwoot_redis ===" && docker logs chatwoot_redis 2>&1 | tail -20 || true
           echo "=== evolution_api ===" && docker logs evolution_api 2>&1 | tail -50 || true
+          echo "=== tata_agent ===" && docker logs tata_agent 2>&1 | tail -50 || true
 
       # -----------------------------------------------------------------------
       # Tear down

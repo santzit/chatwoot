@@ -10,6 +10,7 @@
 #   • redis          — cache and job queues
 #   • rails          — Chatwoot Rails web server (runs DB migrations on start)
 #   • sidekiq        — Chatwoot Sidekiq background worker
+#   • tata-agent     — Tata AI agent bot (webhook receiver), exposed at bot.<DOMAIN>
 #   • evolution-api  — Evolution API (WhatsApp gateway), exposed at evo.<DOMAIN>
 #
 # Prerequisites / first-time setup: see README.md
@@ -162,6 +163,42 @@ services:
     entrypoint: ["sh", "-c"]
     command:
       - "bundle exec rails db:chatwoot_prepare && exec bundle exec sidekiq -C config/sidekiq.yml"
+
+  # ---------------------------------------------------------------------------
+  # Tata Customer Agent  –  AI agent bot (webhook receiver for Chatwoot)
+  #
+  # Exposes the webhook endpoint at https://bot.<DOMAIN>/webhook via Traefik.
+  # Shares the existing Chatwoot postgres for vector + conversation storage.
+  # Copy tata.env.example → tata.env and fill in all values, then:
+  #   1. Create an agent bot in Chatwoot (see README – Bot setup)
+  #   2. Reset the bot access token and copy it to CHATWOOT_API_TOKEN in tata.env
+  #   3. docker compose restart tata-agent
+  # ---------------------------------------------------------------------------
+  tata-agent:
+    image: ghcr.io/santzit/tata-customer-agent:v0.1.1
+    container_name: tata_agent
+    restart: unless-stopped
+    networks:
+      - chatwoot-net
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rails:
+        condition: service_started
+    env_file: tata.env
+    labels:
+      - "traefik.enable=true"
+      # HTTP → HTTPS redirect
+      - "traefik.http.routers.tata-http.rule=Host(`bot.${DOMAIN}`)"
+      - "traefik.http.routers.tata-http.entrypoints=web"
+      - "traefik.http.routers.tata-http.middlewares=redirect-https"
+      # HTTPS with Let's Encrypt TLS
+      - "traefik.http.routers.tata.rule=Host(`bot.${DOMAIN}`)"
+      - "traefik.http.routers.tata.entrypoints=websecure"
+      - "traefik.http.routers.tata.tls=true"
+      - "traefik.http.routers.tata.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.tata.service=tata"
+      - "traefik.http.services.tata.loadbalancer.server.port=8000"
 
   # ---------------------------------------------------------------------------
   # Evolution API  –  WhatsApp gateway / messaging integration
