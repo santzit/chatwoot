@@ -63,7 +63,7 @@ jobs:
       # unchanged layers on subsequent runs.
       # -----------------------------------------------------------------------
       - name: Pull images
-        run: docker compose pull postgres redis rails evolution-api tata-agent
+        run: docker compose pull postgres redis rails evolution-api
 
       # -----------------------------------------------------------------------
       # 3. Start stack (CI subset)
@@ -73,7 +73,7 @@ jobs:
       # with rails causes a UniqueViolation crash loop on pg_stat_statements.
       # -----------------------------------------------------------------------
       - name: Start stack
-        run: docker compose up -d postgres redis rails evolution-api tata-agent
+        run: docker compose up -d postgres redis rails evolution-api
 
       # -----------------------------------------------------------------------
       # 4. Wait for Chatwoot to be ready
@@ -195,23 +195,7 @@ jobs:
           RUBY
 
       # -----------------------------------------------------------------------
-      # 8. Wait for Tata agent to be ready
-      #
-      # TCP check on port 8000 inside the Docker network.
-      # -----------------------------------------------------------------------
-      - name: Wait for Tata agent
-        timeout-minutes: 5
-        run: |
-          until docker exec chatwoot_rails ruby -e \
-              "require 'socket'; Socket.tcp('tata-agent', 8000, connect_timeout: 2) { }" \
-              2>/dev/null; do
-            echo "Waiting for Tata agent..."
-            sleep 5
-          done
-          echo "✔ Tata agent is ready"
-
-      # -----------------------------------------------------------------------
-      # 9. Test Chatwoot agent-bot API – create bot and reset access token
+      # 8. Test Chatwoot agent-bot API – create bot and reset access token
       #
       # Uses the Chatwoot Account API to:
       #   1. Create an agent bot pointing to the tata-agent webhook endpoint.
