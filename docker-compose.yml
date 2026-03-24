@@ -175,7 +175,7 @@ services:
   #   3. docker compose restart tata-agent
   # ---------------------------------------------------------------------------
   tata-agent:
-    image: ghcr.io/santzit/tata-customer-agent:latest
+    image: ghcr.io/santzit/tata-customer-agent:v0.1.1
     container_name: tata_agent
     restart: unless-stopped
     networks:
